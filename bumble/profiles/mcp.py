@@ -208,7 +208,7 @@ class MediaControlService(gatt.TemplateService):
             properties=gatt.Characteristic.Properties.READ
             | gatt.Characteristic.Properties.NOTIFY,
             permissions=gatt.Characteristic.Permissions.READ_REQUIRES_ENCRYPTION,
-            value=media_player_name or 'Bumble Player',
+            value=(media_player_name or 'Bumble Player').encode(),
         )
         self.track_changed_characteristic = gatt.Characteristic(
             uuid=gatt.GATT_TRACK_CHANGED_CHARACTERISTIC,
@@ -247,14 +247,16 @@ class MediaControlService(gatt.TemplateService):
             permissions=gatt.Characteristic.Permissions.READ_REQUIRES_ENCRYPTION,
             value=b'',
         )
-        self.media_control_point_characteristic = gatt.Characteristic(
-            uuid=gatt.GATT_MEDIA_CONTROL_POINT_CHARACTERISTIC,
-            properties=gatt.Characteristic.Properties.WRITE
-            | gatt.Characteristic.Properties.WRITE_WITHOUT_RESPONSE
-            | gatt.Characteristic.Properties.NOTIFY,
-            permissions=gatt.Characteristic.Permissions.READ_REQUIRES_ENCRYPTION
-            | gatt.Characteristic.Permissions.WRITE_REQUIRES_ENCRYPTION,
-            value=gatt.CharacteristicValue(write=self.on_media_control_point),
+        self.media_control_point_characteristic: gatt.Characteristic[bytes] = (
+            gatt.Characteristic(
+                uuid=gatt.GATT_MEDIA_CONTROL_POINT_CHARACTERISTIC,
+                properties=gatt.Characteristic.Properties.WRITE
+                | gatt.Characteristic.Properties.WRITE_WITHOUT_RESPONSE
+                | gatt.Characteristic.Properties.NOTIFY,
+                permissions=gatt.Characteristic.Permissions.READ_REQUIRES_ENCRYPTION
+                | gatt.Characteristic.Permissions.WRITE_REQUIRES_ENCRYPTION,
+                value=gatt.CharacteristicValue(write=self.on_media_control_point),
+            )
         )
         self.media_control_point_opcodes_supported_characteristic = gatt.Characteristic(
             uuid=gatt.GATT_MEDIA_CONTROL_POINT_OPCODES_SUPPORTED_CHARACTERISTIC,
@@ -285,11 +287,8 @@ class MediaControlService(gatt.TemplateService):
         )
 
     async def on_media_control_point(
-        self, connection: Optional[device.Connection], data: bytes
+        self, connection: device.Connection, data: bytes
     ) -> None:
-        if not connection:
-            raise core.InvalidStateError()
-
         opcode = MediaControlPointOpcode(data[0])
 
         await connection.device.notify_subscriber(
@@ -336,30 +335,38 @@ class MediaControlServiceProxy(
         'content_control_id': gatt.GATT_CONTENT_CONTROL_ID_CHARACTERISTIC,
     }
 
-    media_player_name: Optional[gatt_client.CharacteristicProxy] = None
-    media_player_icon_object_id: Optional[gatt_client.CharacteristicProxy] = None
-    media_player_icon_url: Optional[gatt_client.CharacteristicProxy] = None
-    track_changed: Optional[gatt_client.CharacteristicProxy] = None
-    track_title: Optional[gatt_client.CharacteristicProxy] = None
-    track_duration: Optional[gatt_client.CharacteristicProxy] = None
-    track_position: Optional[gatt_client.CharacteristicProxy] = None
-    playback_speed: Optional[gatt_client.CharacteristicProxy] = None
-    seeking_speed: Optional[gatt_client.CharacteristicProxy] = None
-    current_track_segments_object_id: Optional[gatt_client.CharacteristicProxy] = None
-    current_track_object_id: Optional[gatt_client.CharacteristicProxy] = None
-    next_track_object_id: Optional[gatt_client.CharacteristicProxy] = None
-    parent_group_object_id: Optional[gatt_client.CharacteristicProxy] = None
-    current_group_object_id: Optional[gatt_client.CharacteristicProxy] = None
-    playing_order: Optional[gatt_client.CharacteristicProxy] = None
-    playing_orders_supported: Optional[gatt_client.CharacteristicProxy] = None
-    media_state: Optional[gatt_client.CharacteristicProxy] = None
-    media_control_point: Optional[gatt_client.CharacteristicProxy] = None
-    media_control_point_opcodes_supported: Optional[gatt_client.CharacteristicProxy] = (
-        None
-    )
-    search_control_point: Optional[gatt_client.CharacteristicProxy] = None
-    search_results_object_id: Optional[gatt_client.CharacteristicProxy] = None
-    content_control_id: Optional[gatt_client.CharacteristicProxy] = None
+    EVENT_MEDIA_STATE = "media_state"
+    EVENT_TRACK_CHANGED = "track_changed"
+    EVENT_TRACK_TITLE = "track_title"
+    EVENT_TRACK_DURATION = "track_duration"
+    EVENT_TRACK_POSITION = "track_position"
+
+    media_player_name: Optional[gatt_client.CharacteristicProxy[bytes]] = None
+    media_player_icon_object_id: Optional[gatt_client.CharacteristicProxy[bytes]] = None
+    media_player_icon_url: Optional[gatt_client.CharacteristicProxy[bytes]] = None
+    track_changed: Optional[gatt_client.CharacteristicProxy[bytes]] = None
+    track_title: Optional[gatt_client.CharacteristicProxy[bytes]] = None
+    track_duration: Optional[gatt_client.CharacteristicProxy[bytes]] = None
+    track_position: Optional[gatt_client.CharacteristicProxy[bytes]] = None
+    playback_speed: Optional[gatt_client.CharacteristicProxy[bytes]] = None
+    seeking_speed: Optional[gatt_client.CharacteristicProxy[bytes]] = None
+    current_track_segments_object_id: Optional[
+        gatt_client.CharacteristicProxy[bytes]
+    ] = None
+    current_track_object_id: Optional[gatt_client.CharacteristicProxy[bytes]] = None
+    next_track_object_id: Optional[gatt_client.CharacteristicProxy[bytes]] = None
+    parent_group_object_id: Optional[gatt_client.CharacteristicProxy[bytes]] = None
+    current_group_object_id: Optional[gatt_client.CharacteristicProxy[bytes]] = None
+    playing_order: Optional[gatt_client.CharacteristicProxy[bytes]] = None
+    playing_orders_supported: Optional[gatt_client.CharacteristicProxy[bytes]] = None
+    media_state: Optional[gatt_client.CharacteristicProxy[bytes]] = None
+    media_control_point: Optional[gatt_client.CharacteristicProxy[bytes]] = None
+    media_control_point_opcodes_supported: Optional[
+        gatt_client.CharacteristicProxy[bytes]
+    ] = None
+    search_control_point: Optional[gatt_client.CharacteristicProxy[bytes]] = None
+    search_results_object_id: Optional[gatt_client.CharacteristicProxy[bytes]] = None
+    content_control_id: Optional[gatt_client.CharacteristicProxy[bytes]] = None
 
     if TYPE_CHECKING:
         media_control_point_notifications: asyncio.Queue[bytes]
@@ -428,20 +435,20 @@ class MediaControlServiceProxy(
         self.media_control_point_notifications.put_nowait(data)
 
     def _on_media_state(self, data: bytes) -> None:
-        self.emit('media_state', MediaState(data[0]))
+        self.emit(self.EVENT_MEDIA_STATE, MediaState(data[0]))
 
     def _on_track_changed(self, data: bytes) -> None:
         del data
-        self.emit('track_changed')
+        self.emit(self.EVENT_TRACK_CHANGED)
 
     def _on_track_title(self, data: bytes) -> None:
-        self.emit('track_title', data.decode("utf-8"))
+        self.emit(self.EVENT_TRACK_TITLE, data.decode("utf-8"))
 
     def _on_track_duration(self, data: bytes) -> None:
-        self.emit('track_duration', struct.unpack_from('<i', data)[0])
+        self.emit(self.EVENT_TRACK_DURATION, struct.unpack_from('<i', data)[0])
 
     def _on_track_position(self, data: bytes) -> None:
-        self.emit('track_position', struct.unpack_from('<i', data)[0])
+        self.emit(self.EVENT_TRACK_POSITION, struct.unpack_from('<i', data)[0])
 
 
 class GenericMediaControlServiceProxy(MediaControlServiceProxy):

@@ -115,9 +115,7 @@ async def open_usb_transport(spec: str) -> Transport:
             self.acl_out = acl_out
             self.acl_out_transfer = device.getTransfer()
             self.acl_out_transfer_ready = asyncio.Semaphore(1)
-            self.packets: asyncio.Queue[bytes] = (
-                asyncio.Queue()
-            )  # Queue of packets waiting to be sent
+            self.packets = asyncio.Queue[bytes]()  # Queue of packets waiting to be sent
             self.loop = asyncio.get_running_loop()
             self.queue_task = None
             self.cancel_done = self.loop.create_future()
@@ -149,7 +147,10 @@ async def open_usb_transport(spec: str) -> Transport:
 
             if status != usb1.TRANSFER_COMPLETED:
                 logger.warning(
-                    color(f'!!! OUT transfer not completed: status={status}', 'red')
+                    color(
+                        f'!!! OUT transfer not completed: status={status}',
+                        'red',
+                    )
                 )
 
         async def process_queue(self):
@@ -275,7 +276,10 @@ async def open_usb_transport(spec: str) -> Transport:
                 )
             else:
                 logger.warning(
-                    color(f'!!! IN transfer not completed: status={status}', 'red')
+                    color(
+                        f'!!! IN[{packet_type}] transfer not completed: status={status}',
+                        'red',
+                    )
                 )
                 self.loop.call_soon_threadsafe(self.on_transport_lost)
 

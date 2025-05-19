@@ -29,26 +29,31 @@ import functools
 import inspect
 import struct
 from typing import (
-    Any,
     Awaitable,
     Callable,
+    Generic,
     Dict,
     List,
     Optional,
     Type,
+    TypeVar,
     Union,
     TYPE_CHECKING,
 )
 
-from pyee import EventEmitter
 
 from bumble import utils
-from bumble.core import UUID, name_or_number, ProtocolError
+from bumble.core import UUID, name_or_number, InvalidOperationError, ProtocolError
 from bumble.hci import HCI_Object, key_with_value
 from bumble.colors import color
 
+# -----------------------------------------------------------------------------
+# Typing
+# -----------------------------------------------------------------------------
 if TYPE_CHECKING:
     from bumble.device import Connection
+
+_T = TypeVar('_T')
 
 # -----------------------------------------------------------------------------
 # Constants
@@ -57,6 +62,7 @@ if TYPE_CHECKING:
 # pylint: disable=line-too-long
 
 ATT_CID = 0x04
+ATT_PSM = 0x001F
 
 ATT_ERROR_RESPONSE              = 0x01
 ATT_EXCHANGE_MTU_REQUEST        = 0x02
@@ -216,7 +222,12 @@ UUID_2_FIELD_SPEC    = lambda x, y: UUID.parse_uuid_2(x, y)  # noqa: E731
 # Exceptions
 # -----------------------------------------------------------------------------
 class ATT_Error(ProtocolError):
-    def __init__(self, error_code, att_handle=0x0000, message=''):
+    error_code: int
+    att_handle: int
+
+    def __init__(
+        self, error_code: int, att_handle: int = 0x0000, message: str = ''
+    ) -> None:
         super().__init__(
             error_code,
             error_namespace='att',
@@ -226,7 +237,10 @@ class ATT_Error(ProtocolError):
         self.message = message
 
     def __str__(self):
-        return f'ATT_Error(error={self.error_name}, handle={self.att_handle:04X}): {self.message}'
+        return (
+            f'ATT_Error(error={self.error_name}, '
+            f'handle={self.att_handle:04X}): {self.message}'
+        )
 
 
 # -----------------------------------------------------------------------------
@@ -291,9 +305,6 @@ class ATT_PDU:
     def init_from_bytes(self, pdu, offset):
         return HCI_Object.init_from_bytes(self, pdu, offset, self.fields)
 
-    def to_bytes(self):
-        return self.pdu
-
     @property
     def is_command(self):
         return ((self.op_code >> 6) & 1) == 1
@@ -303,7 +314,7 @@ class ATT_PDU:
         return ((self.op_code >> 7) & 1) == 1
 
     def __bytes__(self):
-        return self.to_bytes()
+        return self.pdu
 
     def __str__(self):
         result = color(self.name, 'yellow')
@@ -710,7 +721,7 @@ class ATT_Prepare_Write_Response(ATT_PDU):
 
 
 # -----------------------------------------------------------------------------
-@ATT_PDU.subclass([])
+@ATT_PDU.subclass([("flags", 1)])
 class ATT_Execute_Write_Request(ATT_PDU):
     '''
     See Bluetooth spec @ Vol 3, Part F - 3.4.6.3 Execute Write Request
@@ -750,7 +761,7 @@ class ATT_Handle_Value_Confirmation(ATT_PDU):
 
 
 # -----------------------------------------------------------------------------
-class AttributeValue:
+class AttributeValue(Generic[_T]):
     '''
     Attribute value where reading and/or writing is delegated to functions
     passed as arguments to the constructor.
@@ -759,33 +770,32 @@ class AttributeValue:
     def __init__(
         self,
         read: Union[
-            Callable[[Optional[Connection]], bytes],
-            Callable[[Optional[Connection]], Awaitable[bytes]],
+            Callable[[Connection], _T],
+            Callable[[Connection], Awaitable[_T]],
             None,
         ] = None,
         write: Union[
-            Callable[[Optional[Connection], bytes], None],
-            Callable[[Optional[Connection], bytes], Awaitable[None]],
+            Callable[[Connection, _T], None],
+            Callable[[Connection, _T], Awaitable[None]],
             None,
         ] = None,
     ):
         self._read = read
         self._write = write
 
-    def read(self, connection: Optional[Connection]) -> Union[bytes, Awaitable[bytes]]:
-        return self._read(connection) if self._read else b''
+    def read(self, connection: Connection) -> Union[_T, Awaitable[_T]]:
+        if self._read is None:
+            raise InvalidOperationError('AttributeValue has no read function')
+        return self._read(connection)
 
-    def write(
-        self, connection: Optional[Connection], value: bytes
-    ) -> Union[Awaitable[None], None]:
-        if self._write:
-            return self._write(connection, value)
-
-        return None
+    def write(self, connection: Connection, value: _T) -> Union[Awaitable[None], None]:
+        if self._write is None:
+            raise InvalidOperationError('AttributeValue has no write function')
+        return self._write(connection, value)
 
 
 # -----------------------------------------------------------------------------
-class Attribute(EventEmitter):
+class Attribute(utils.EventEmitter, Generic[_T]):
     class Permissions(enum.IntFlag):
         READABLE = 0x01
         WRITEABLE = 0x02
@@ -824,15 +834,18 @@ class Attribute(EventEmitter):
     READ_REQUIRES_AUTHORIZATION = Permissions.READ_REQUIRES_AUTHORIZATION
     WRITE_REQUIRES_AUTHORIZATION = Permissions.WRITE_REQUIRES_AUTHORIZATION
 
-    value: Union[bytes, AttributeValue]
+    EVENT_READ = "read"
+    EVENT_WRITE = "write"
+
+    value: Union[AttributeValue[_T], _T, None]
 
     def __init__(
         self,
         attribute_type: Union[str, bytes, UUID],
         permissions: Union[str, Attribute.Permissions],
-        value: Union[str, bytes, AttributeValue] = b'',
+        value: Union[AttributeValue[_T], _T, None] = None,
     ) -> None:
-        EventEmitter.__init__(self)
+        utils.EventEmitter.__init__(self)
         self.handle = 0
         self.end_group_handle = 0
         if isinstance(permissions, str):
@@ -848,19 +861,15 @@ class Attribute(EventEmitter):
         else:
             self.type = attribute_type
 
-        # Convert the value to a byte array
-        if isinstance(value, str):
-            self.value = bytes(value, 'utf-8')
-        else:
-            self.value = value
+        self.value = value
 
-    def encode_value(self, value: Any) -> bytes:
-        return value
+    def encode_value(self, value: _T) -> bytes:
+        return value  # type: ignore
 
-    def decode_value(self, value_bytes: bytes) -> Any:
-        return value_bytes
+    def decode_value(self, value: bytes) -> _T:
+        return value  # type: ignore
 
-    async def read_value(self, connection: Optional[Connection]) -> bytes:
+    async def read_value(self, connection: Connection) -> bytes:
         if (
             (self.permissions & self.READ_REQUIRES_ENCRYPTION)
             and connection is not None
@@ -883,11 +892,14 @@ class Attribute(EventEmitter):
                 error_code=ATT_INSUFFICIENT_AUTHORIZATION_ERROR, att_handle=self.handle
             )
 
-        if hasattr(self.value, 'read'):
+        value: Union[_T, None]
+        if isinstance(self.value, AttributeValue):
             try:
-                value = self.value.read(connection)
-                if inspect.isawaitable(value):
-                    value = await value
+                read_value = self.value.read(connection)
+                if inspect.isawaitable(read_value):
+                    value = await read_value
+                else:
+                    value = read_value
             except ATT_Error as error:
                 raise ATT_Error(
                     error_code=error.error_code, att_handle=self.handle
@@ -895,18 +907,24 @@ class Attribute(EventEmitter):
         else:
             value = self.value
 
-        return self.encode_value(value)
+        self.emit(self.EVENT_READ, connection, b'' if value is None else value)
 
-    async def write_value(self, connection: Connection, value_bytes: bytes) -> None:
+        return b'' if value is None else self.encode_value(value)
+
+    async def write_value(self, connection: Connection, value: bytes) -> None:
         if (
-            self.permissions & self.WRITE_REQUIRES_ENCRYPTION
-        ) and not connection.encryption:
+            (self.permissions & self.WRITE_REQUIRES_ENCRYPTION)
+            and connection is not None
+            and not connection.encryption
+        ):
             raise ATT_Error(
                 error_code=ATT_INSUFFICIENT_ENCRYPTION_ERROR, att_handle=self.handle
             )
         if (
-            self.permissions & self.WRITE_REQUIRES_AUTHENTICATION
-        ) and not connection.authenticated:
+            (self.permissions & self.WRITE_REQUIRES_AUTHENTICATION)
+            and connection is not None
+            and not connection.authenticated
+        ):
             raise ATT_Error(
                 error_code=ATT_INSUFFICIENT_AUTHENTICATION_ERROR, att_handle=self.handle
             )
@@ -916,11 +934,11 @@ class Attribute(EventEmitter):
                 error_code=ATT_INSUFFICIENT_AUTHORIZATION_ERROR, att_handle=self.handle
             )
 
-        value = self.decode_value(value_bytes)
+        decoded_value = self.decode_value(value)
 
-        if hasattr(self.value, 'write'):
+        if isinstance(self.value, AttributeValue):
             try:
-                result = self.value.write(connection, value)
+                result = self.value.write(connection, decoded_value)
                 if inspect.isawaitable(result):
                     await result
             except ATT_Error as error:
@@ -928,9 +946,9 @@ class Attribute(EventEmitter):
                     error_code=error.error_code, att_handle=self.handle
                 ) from error
         else:
-            self.value = value
+            self.value = decoded_value
 
-        self.emit('write', connection, value)
+        self.emit(self.EVENT_WRITE, connection, decoded_value)
 
     def __repr__(self):
         if isinstance(self.value, bytes):

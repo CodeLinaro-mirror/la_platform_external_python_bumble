@@ -18,20 +18,21 @@
 from __future__ import annotations
 import asyncio
 import functools
-from bumble import att, gatt, gatt_client
-from bumble.core import InvalidArgumentError, InvalidStateError
-from bumble.device import Device, Connection
-from bumble.utils import AsyncRunner, OpenIntEnum
-from bumble.hci import Address
 from dataclasses import dataclass, field
 import logging
 from typing import Any, Dict, List, Optional, Set, Union
+
+from bumble import att, gatt, gatt_adapters, gatt_client
+from bumble.core import InvalidArgumentError, InvalidStateError
+from bumble.device import Device, Connection
+from bumble import utils
+from bumble.hci import Address
 
 
 # -----------------------------------------------------------------------------
 # Constants
 # -----------------------------------------------------------------------------
-class ErrorCode(OpenIntEnum):
+class ErrorCode(utils.OpenIntEnum):
     '''See Hearing Access Service 2.4. Attribute Profile error codes.'''
 
     INVALID_OPCODE = 0x80
@@ -41,7 +42,7 @@ class ErrorCode(OpenIntEnum):
     INVALID_PARAMETERS_LENGTH = 0x84
 
 
-class HearingAidType(OpenIntEnum):
+class HearingAidType(utils.OpenIntEnum):
     '''See Hearing Access Service 3.1. Hearing Aid Features.'''
 
     BINAURAL_HEARING_AID = 0b00
@@ -49,35 +50,35 @@ class HearingAidType(OpenIntEnum):
     BANDED_HEARING_AID = 0b10
 
 
-class PresetSynchronizationSupport(OpenIntEnum):
+class PresetSynchronizationSupport(utils.OpenIntEnum):
     '''See Hearing Access Service 3.1. Hearing Aid Features.'''
 
     PRESET_SYNCHRONIZATION_IS_NOT_SUPPORTED = 0b0
     PRESET_SYNCHRONIZATION_IS_SUPPORTED = 0b1
 
 
-class IndependentPresets(OpenIntEnum):
+class IndependentPresets(utils.OpenIntEnum):
     '''See Hearing Access Service 3.1. Hearing Aid Features.'''
 
     IDENTICAL_PRESET_RECORD = 0b0
     DIFFERENT_PRESET_RECORD = 0b1
 
 
-class DynamicPresets(OpenIntEnum):
+class DynamicPresets(utils.OpenIntEnum):
     '''See Hearing Access Service 3.1. Hearing Aid Features.'''
 
     PRESET_RECORDS_DOES_NOT_CHANGE = 0b0
     PRESET_RECORDS_MAY_CHANGE = 0b1
 
 
-class WritablePresetsSupport(OpenIntEnum):
+class WritablePresetsSupport(utils.OpenIntEnum):
     '''See Hearing Access Service 3.1. Hearing Aid Features.'''
 
     WRITABLE_PRESET_RECORDS_NOT_SUPPORTED = 0b0
     WRITABLE_PRESET_RECORDS_SUPPORTED = 0b1
 
 
-class HearingAidPresetControlPointOpcode(OpenIntEnum):
+class HearingAidPresetControlPointOpcode(utils.OpenIntEnum):
     '''See Hearing Access Service 3.3.1 Hearing Aid Preset Control Point operation requirements.'''
 
     # fmt: off
@@ -129,7 +130,7 @@ def HearingAidFeatures_from_bytes(data: int) -> HearingAidFeatures:
 class PresetChangedOperation:
     '''See Hearing Access Service 3.2.2.2. Preset Changed operation.'''
 
-    class ChangeId(OpenIntEnum):
+    class ChangeId(utils.OpenIntEnum):
         # fmt: off
         GENERIC_UPDATE            = 0x00
         PRESET_RECORD_DELETED     = 0x01
@@ -189,11 +190,11 @@ class PresetRecord:
 
     @dataclass
     class Property:
-        class Writable(OpenIntEnum):
+        class Writable(utils.OpenIntEnum):
             CANNOT_BE_WRITTEN = 0b0
             CAN_BE_WRITTEN = 0b1
 
-        class IsAvailable(OpenIntEnum):
+        class IsAvailable(utils.OpenIntEnum):
             IS_UNAVAILABLE = 0b0
             IS_AVAILABLE = 0b1
 
@@ -223,9 +224,9 @@ class PresetRecord:
 class HearingAccessService(gatt.TemplateService):
     UUID = gatt.GATT_HEARING_ACCESS_SERVICE
 
-    hearing_aid_features_characteristic: gatt.Characteristic
-    hearing_aid_preset_control_point: gatt.Characteristic
-    active_preset_index_characteristic: gatt.Characteristic
+    hearing_aid_features_characteristic: gatt.Characteristic[bytes]
+    hearing_aid_preset_control_point: gatt.Characteristic[bytes]
+    active_preset_index_characteristic: gatt.Characteristic[bytes]
     active_preset_index: int
     active_preset_index_per_device: Dict[Address, int]
 
@@ -265,13 +266,13 @@ class HearingAccessService(gatt.TemplateService):
         # associate the lowest index as the current active preset at startup
         self.active_preset_index = sorted(self.preset_records.keys())[0]
 
-        @device.on('connection')  # type: ignore
+        @device.on(device.EVENT_CONNECTION)
         def on_connection(connection: Connection) -> None:
-            @connection.on('disconnection')  # type: ignore
+            @connection.on(connection.EVENT_DISCONNECTION)
             def on_disconnection(_reason) -> None:
                 self.currently_connected_clients.remove(connection)
 
-            @connection.on('pairing')  # type: ignore
+            @connection.on(connection.EVENT_PAIRING)
             def on_pairing(*_: Any) -> None:
                 self.on_incoming_paired_connection(connection)
 
@@ -332,11 +333,10 @@ class HearingAccessService(gatt.TemplateService):
             # Update the active preset index if needed
             await self.notify_active_preset_for_connection(connection)
 
-        connection.abort_on('disconnection', on_connection_async())
+        utils.cancel_on_event(connection, 'disconnection', on_connection_async())
 
-    def _on_read_active_preset_index(
-        self, __connection__: Optional[Connection]
-    ) -> bytes:
+    def _on_read_active_preset_index(self, connection: Connection) -> bytes:
+        del connection  # Unused
         return bytes([self.active_preset_index])
 
     # TODO this need to be triggered when device is unbonded
@@ -344,18 +344,13 @@ class HearingAccessService(gatt.TemplateService):
         self.preset_changed_operations_history_per_device.pop(addr)
 
     async def _on_write_hearing_aid_preset_control_point(
-        self, connection: Optional[Connection], value: bytes
+        self, connection: Connection, value: bytes
     ):
-        assert connection
-
         opcode = HearingAidPresetControlPointOpcode(value[0])
         handler = getattr(self, '_on_' + opcode.name.lower())
         await handler(connection, value)
 
-    async def _on_read_presets_request(
-        self, connection: Optional[Connection], value: bytes
-    ):
-        assert connection
+    async def _on_read_presets_request(self, connection: Connection, value: bytes):
         if connection.att_mtu < 49:  # 2.5. GATT sub-procedure requirements
             logging.warning(f'HAS require MTU >= 49: {connection}')
 
@@ -381,7 +376,7 @@ class HearingAccessService(gatt.TemplateService):
         if len(presets) == 0:
             raise att.ATT_Error(att.ErrorCode.OUT_OF_RANGE)
 
-        AsyncRunner.spawn(self._read_preset_response(connection, presets))
+        utils.AsyncRunner.spawn(self._read_preset_response(connection, presets))
 
     async def _read_preset_response(
         self, connection: Connection, presets: List[PresetRecord]
@@ -470,10 +465,7 @@ class HearingAccessService(gatt.TemplateService):
         for connection in self.currently_connected_clients:
             await self._preset_changed_operation(connection)
 
-    async def _on_write_preset_name(
-        self, connection: Optional[Connection], value: bytes
-    ):
-        assert connection
+    async def _on_write_preset_name(self, connection: Connection, value: bytes):
 
         if self.read_presets_request_in_progress:
             raise att.ATT_Error(att.ErrorCode.PROCEDURE_ALREADY_IN_PROGRESS)
@@ -521,10 +513,7 @@ class HearingAccessService(gatt.TemplateService):
         for connection in self.currently_connected_clients:
             await self.notify_active_preset_for_connection(connection)
 
-    async def set_active_preset(
-        self, connection: Optional[Connection], value: bytes
-    ) -> None:
-        assert connection
+    async def set_active_preset(self, connection: Connection, value: bytes) -> None:
         index = value[1]
         preset = self.preset_records.get(index, None)
         if (
@@ -541,16 +530,11 @@ class HearingAccessService(gatt.TemplateService):
         self.active_preset_index = index
         await self.notify_active_preset()
 
-    async def _on_set_active_preset(
-        self, connection: Optional[Connection], value: bytes
-    ):
+    async def _on_set_active_preset(self, connection: Connection, value: bytes):
         await self.set_active_preset(connection, value)
 
-    async def set_next_or_previous_preset(
-        self, connection: Optional[Connection], is_previous
-    ):
+    async def set_next_or_previous_preset(self, connection: Connection, is_previous):
         '''Set the next or the previous preset as active'''
-        assert connection
 
         if self.active_preset_index == 0x00:
             raise att.ATT_Error(ErrorCode.PRESET_OPERATION_NOT_POSSIBLE)
@@ -580,17 +564,17 @@ class HearingAccessService(gatt.TemplateService):
         await self.notify_active_preset()
 
     async def _on_set_next_preset(
-        self, connection: Optional[Connection], __value__: bytes
+        self, connection: Connection, __value__: bytes
     ) -> None:
         await self.set_next_or_previous_preset(connection, False)
 
     async def _on_set_previous_preset(
-        self, connection: Optional[Connection], __value__: bytes
+        self, connection: Connection, __value__: bytes
     ) -> None:
         await self.set_next_or_previous_preset(connection, True)
 
     async def _on_set_active_preset_synchronized_locally(
-        self, connection: Optional[Connection], value: bytes
+        self, connection: Connection, value: bytes
     ):
         if (
             self.server_features.preset_synchronization_support
@@ -601,7 +585,7 @@ class HearingAccessService(gatt.TemplateService):
         # TODO (low priority) inform other server of the change
 
     async def _on_set_next_preset_synchronized_locally(
-        self, connection: Optional[Connection], __value__: bytes
+        self, connection: Connection, __value__: bytes
     ):
         if (
             self.server_features.preset_synchronization_support
@@ -612,7 +596,7 @@ class HearingAccessService(gatt.TemplateService):
         # TODO (low priority) inform other server of the change
 
     async def _on_set_previous_preset_synchronized_locally(
-        self, connection: Optional[Connection], __value__: bytes
+        self, connection: Connection, __value__: bytes
     ):
         if (
             self.server_features.preset_synchronization_support
@@ -631,11 +615,12 @@ class HearingAccessServiceProxy(gatt_client.ProfileServiceProxy):
 
     hearing_aid_preset_control_point: gatt_client.CharacteristicProxy
     preset_control_point_indications: asyncio.Queue
+    active_preset_index_notification: asyncio.Queue
 
     def __init__(self, service_proxy: gatt_client.ServiceProxy) -> None:
         self.service_proxy = service_proxy
 
-        self.server_features = gatt.PackedCharacteristicAdapter(
+        self.server_features = gatt_adapters.PackedCharacteristicProxyAdapter(
             service_proxy.get_characteristics_by_uuid(
                 gatt.GATT_HEARING_AID_FEATURES_CHARACTERISTIC
             )[0],
@@ -648,7 +633,7 @@ class HearingAccessServiceProxy(gatt_client.ProfileServiceProxy):
             )[0]
         )
 
-        self.active_preset_index = gatt.PackedCharacteristicAdapter(
+        self.active_preset_index = gatt_adapters.PackedCharacteristicProxyAdapter(
             service_proxy.get_characteristics_by_uuid(
                 gatt.GATT_ACTIVE_PRESET_INDEX_CHARACTERISTIC
             )[0],

@@ -23,7 +23,6 @@ import logging
 import struct
 
 from collections import deque
-from pyee import EventEmitter
 from typing import (
     Dict,
     Type,
@@ -39,19 +38,19 @@ from typing import (
     TYPE_CHECKING,
 )
 
-from .utils import deprecated
-from .colors import color
-from .core import (
-    BT_CENTRAL_ROLE,
+from bumble import utils
+from bumble.colors import color
+from bumble.core import (
     InvalidStateError,
     InvalidArgumentError,
     InvalidPacketError,
     OutOfResourcesError,
     ProtocolError,
 )
-from .hci import (
+from bumble.hci import (
     HCI_LE_Connection_Update_Command,
     HCI_Object,
+    Role,
     key_with_value,
     name_or_number,
 )
@@ -225,16 +224,13 @@ class L2CAP_PDU:
 
         return L2CAP_PDU(l2cap_pdu_cid, l2cap_pdu_payload)
 
-    def to_bytes(self) -> bytes:
+    def __bytes__(self) -> bytes:
         header = struct.pack('<HH', len(self.payload), self.cid)
         return header + self.payload
 
     def __init__(self, cid: int, payload: bytes) -> None:
         self.cid = cid
         self.payload = payload
-
-    def __bytes__(self) -> bytes:
-        return self.to_bytes()
 
     def __str__(self) -> str:
         return f'{color("L2CAP", "green")} [CID={self.cid}]: {self.payload.hex()}'
@@ -333,11 +329,8 @@ class L2CAP_Control_Frame:
     def init_from_bytes(self, pdu, offset):
         return HCI_Object.init_from_bytes(self, pdu, offset, self.fields)
 
-    def to_bytes(self) -> bytes:
-        return self.pdu
-
     def __bytes__(self) -> bytes:
-        return self.to_bytes()
+        return self.pdu
 
     def __str__(self) -> str:
         result = f'{color(self.name, "yellow")} [ID={self.identifier}]'
@@ -726,7 +719,7 @@ class L2CAP_LE_Flow_Control_Credit(L2CAP_Control_Frame):
 
 
 # -----------------------------------------------------------------------------
-class ClassicChannel(EventEmitter):
+class ClassicChannel(utils.EventEmitter):
     class State(enum.IntEnum):
         # States
         CLOSED = 0x00
@@ -750,6 +743,9 @@ class ClassicChannel(EventEmitter):
         WAIT_IND_FINAL_RSP = 0x15
         WAIT_FINAL_RSP = 0x16
         WAIT_CONTROL_IND = 0x17
+
+    EVENT_OPEN = "open"
+    EVENT_CLOSE = "close"
 
     connection_result: Optional[asyncio.Future[None]]
     disconnection_result: Optional[asyncio.Future[None]]
@@ -779,7 +775,6 @@ class ClassicChannel(EventEmitter):
         self.psm = psm
         self.source_cid = source_cid
         self.destination_cid = 0
-        self.response = None
         self.connection_result = None
         self.disconnection_result = None
         self.sink = None
@@ -789,27 +784,15 @@ class ClassicChannel(EventEmitter):
         self.state = new_state
 
     def send_pdu(self, pdu: Union[SupportsBytes, bytes]) -> None:
+        if self.state != self.State.OPEN:
+            raise InvalidStateError('channel not open')
         self.manager.send_pdu(self.connection, self.destination_cid, pdu)
 
     def send_control_frame(self, frame: L2CAP_Control_Frame) -> None:
         self.manager.send_control_frame(self.connection, self.signaling_cid, frame)
 
-    async def send_request(self, request: SupportsBytes) -> bytes:
-        # Check that there isn't already a request pending
-        if self.response:
-            raise InvalidStateError('request already pending')
-        if self.state != self.State.OPEN:
-            raise InvalidStateError('channel not open')
-
-        self.response = asyncio.get_running_loop().create_future()
-        self.send_pdu(request)
-        return await self.response
-
     def on_pdu(self, pdu: bytes) -> None:
-        if self.response:
-            self.response.set_result(pdu)
-            self.response = None
-        elif self.sink:
+        if self.sink:
             # pylint: disable=not-callable
             self.sink(pdu)
         else:
@@ -840,8 +823,8 @@ class ClassicChannel(EventEmitter):
 
         # Wait for the connection to succeed or fail
         try:
-            return await self.connection.abort_on(
-                'disconnection', self.connection_result
+            return await utils.cancel_on_event(
+                self.connection, 'disconnection', self.connection_result
             )
         finally:
             self.connection_result = None
@@ -867,7 +850,7 @@ class ClassicChannel(EventEmitter):
     def abort(self) -> None:
         if self.state == self.State.OPEN:
             self._change_state(self.State.CLOSED)
-            self.emit('close')
+            self.emit(self.EVENT_CLOSE)
 
     def send_configure_request(self) -> None:
         options = L2CAP_Control_Frame.encode_configuration_options(
@@ -960,7 +943,7 @@ class ClassicChannel(EventEmitter):
             if self.connection_result:
                 self.connection_result.set_result(None)
                 self.connection_result = None
-            self.emit('open')
+            self.emit(self.EVENT_OPEN)
         elif self.state == self.State.WAIT_CONFIG_REQ_RSP:
             self._change_state(self.State.WAIT_CONFIG_RSP)
 
@@ -976,7 +959,7 @@ class ClassicChannel(EventEmitter):
                 if self.connection_result:
                     self.connection_result.set_result(None)
                     self.connection_result = None
-                self.emit('open')
+                self.emit(self.EVENT_OPEN)
             else:
                 logger.warning(color('invalid state', 'red'))
         elif (
@@ -1011,7 +994,7 @@ class ClassicChannel(EventEmitter):
                 )
             )
             self._change_state(self.State.CLOSED)
-            self.emit('close')
+            self.emit(self.EVENT_CLOSE)
             self.manager.on_channel_closed(self)
         else:
             logger.warning(color('invalid state', 'red'))
@@ -1032,7 +1015,7 @@ class ClassicChannel(EventEmitter):
         if self.disconnection_result:
             self.disconnection_result.set_result(None)
             self.disconnection_result = None
-        self.emit('close')
+        self.emit(self.EVENT_CLOSE)
         self.manager.on_channel_closed(self)
 
     def __str__(self) -> str:
@@ -1045,7 +1028,7 @@ class ClassicChannel(EventEmitter):
 
 
 # -----------------------------------------------------------------------------
-class LeCreditBasedChannel(EventEmitter):
+class LeCreditBasedChannel(utils.EventEmitter):
     """
     LE Credit-based Connection Oriented Channel
     """
@@ -1066,6 +1049,9 @@ class LeCreditBasedChannel(EventEmitter):
     state: State
     connection: Connection
     sink: Optional[Callable[[bytes], Any]]
+
+    EVENT_OPEN = "open"
+    EVENT_CLOSE = "close"
 
     def __init__(
         self,
@@ -1118,9 +1104,9 @@ class LeCreditBasedChannel(EventEmitter):
         self.state = new_state
 
         if new_state == self.State.CONNECTED:
-            self.emit('open')
+            self.emit(self.EVENT_OPEN)
         elif new_state == self.State.DISCONNECTED:
-            self.emit('close')
+            self.emit(self.EVENT_CLOSE)
 
     def send_pdu(self, pdu: Union[SupportsBytes, bytes]) -> None:
         self.manager.send_pdu(self.connection, self.destination_cid, pdu)
@@ -1400,7 +1386,9 @@ class LeCreditBasedChannel(EventEmitter):
 
 
 # -----------------------------------------------------------------------------
-class ClassicChannelServer(EventEmitter):
+class ClassicChannelServer(utils.EventEmitter):
+    EVENT_CONNECTION = "connection"
+
     def __init__(
         self,
         manager: ChannelManager,
@@ -1415,7 +1403,7 @@ class ClassicChannelServer(EventEmitter):
         self.mtu = mtu
 
     def on_connection(self, channel: ClassicChannel) -> None:
-        self.emit('connection', channel)
+        self.emit(self.EVENT_CONNECTION, channel)
         if self.handler:
             self.handler(channel)
 
@@ -1425,7 +1413,9 @@ class ClassicChannelServer(EventEmitter):
 
 
 # -----------------------------------------------------------------------------
-class LeCreditBasedChannelServer(EventEmitter):
+class LeCreditBasedChannelServer(utils.EventEmitter):
+    EVENT_CONNECTION = "connection"
+
     def __init__(
         self,
         manager: ChannelManager,
@@ -1444,7 +1434,7 @@ class LeCreditBasedChannelServer(EventEmitter):
         self.mps = mps
 
     def on_connection(self, channel: LeCreditBasedChannel) -> None:
-        self.emit('connection', channel)
+        self.emit(self.EVENT_CONNECTION, channel)
         if self.handler:
             self.handler(channel)
 
@@ -1540,6 +1530,9 @@ class ChannelManager:
 
     def next_identifier(self, connection: Connection) -> int:
         identifier = (self.identifiers.setdefault(connection.handle, 0) + 1) % 256
+        # 0x00 is an invalid ID (BT Core Spec, Vol 3, Part A, Sect 4
+        if identifier == 0:
+            identifier = 1
         self.identifiers[connection.handle] = identifier
         return identifier
 
@@ -1552,7 +1545,7 @@ class ChannelManager:
         if cid in self.fixed_channels:
             del self.fixed_channels[cid]
 
-    @deprecated("Please use create_classic_server")
+    @utils.deprecated("Please use create_classic_server")
     def register_server(
         self,
         psm: int,
@@ -1598,7 +1591,7 @@ class ChannelManager:
 
         return self.servers[spec.psm]
 
-    @deprecated("Please use create_le_credit_based_server()")
+    @utils.deprecated("Please use create_le_credit_based_server()")
     def register_le_coc_server(
         self,
         psm: int,
@@ -1911,6 +1904,7 @@ class ChannelManager:
             data = sum(1 << cid for cid in self.fixed_channels).to_bytes(8, 'little')
         else:
             result = L2CAP_Information_Response.NOT_SUPPORTED
+            data = b''
 
         self.send_control_frame(
             connection,
@@ -1926,7 +1920,7 @@ class ChannelManager:
     def on_l2cap_connection_parameter_update_request(
         self, connection: Connection, cid: int, request
     ):
-        if connection.role == BT_CENTRAL_ROLE:
+        if connection.role == Role.CENTRAL:
             self.send_control_frame(
                 connection,
                 cid,
@@ -2141,7 +2135,7 @@ class ChannelManager:
             if channel.source_cid in connection_channels:
                 del connection_channels[channel.source_cid]
 
-    @deprecated("Please use create_le_credit_based_channel()")
+    @utils.deprecated("Please use create_le_credit_based_channel()")
     async def open_le_coc(
         self, connection: Connection, psm: int, max_credits: int, mtu: int, mps: int
     ) -> LeCreditBasedChannel:
@@ -2198,7 +2192,7 @@ class ChannelManager:
 
         return channel
 
-    @deprecated("Please use create_classic_channel()")
+    @utils.deprecated("Please use create_classic_channel()")
     async def connect(self, connection: Connection, psm: int) -> ClassicChannel:
         return await self.create_classic_channel(
             connection=connection, spec=ClassicChannelSpec(psm=psm)
@@ -2248,12 +2242,12 @@ class ChannelManager:
 
 
 class Channel(ClassicChannel):
-    @deprecated("Please use ClassicChannel")
+    @utils.deprecated("Please use ClassicChannel")
     def __init__(self, *args, **kwargs) -> None:
         super().__init__(*args, **kwargs)
 
 
 class LeConnectionOrientedChannel(LeCreditBasedChannel):
-    @deprecated("Please use LeCreditBasedChannel")
+    @utils.deprecated("Please use LeCreditBasedChannel")
     def __init__(self, *args, **kwargs) -> None:
         super().__init__(*args, **kwargs)

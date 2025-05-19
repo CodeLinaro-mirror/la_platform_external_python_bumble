@@ -16,9 +16,11 @@
 # Imports
 # -----------------------------------------------------------------------------
 import asyncio
+import dataclasses
 import enum
 import logging
 import os
+import statistics
 import struct
 import time
 
@@ -26,8 +28,7 @@ import click
 
 from bumble import l2cap
 from bumble.core import (
-    BT_BR_EDR_TRANSPORT,
-    BT_LE_TRANSPORT,
+    PhysicalTransport,
     BT_L2CAP_PROTOCOL_ID,
     BT_RFCOMM_PROTOCOL_ID,
     UUID,
@@ -40,8 +41,7 @@ from bumble.hci import (
     HCI_LE_1M_PHY,
     HCI_LE_2M_PHY,
     HCI_LE_CODED_PHY,
-    HCI_CENTRAL_ROLE,
-    HCI_PERIPHERAL_ROLE,
+    Role,
     HCI_Constant,
     HCI_Error,
     HCI_StatusError,
@@ -96,49 +96,22 @@ DEFAULT_RFCOMM_MTU = 2048
 # -----------------------------------------------------------------------------
 # Utils
 # -----------------------------------------------------------------------------
-def parse_packet(packet):
-    if len(packet) < 1:
-        logging.info(
-            color(f'!!! Packet too short (got {len(packet)} bytes, need >= 1)', 'red')
-        )
-        raise ValueError('packet too short')
-
-    try:
-        packet_type = PacketType(packet[0])
-    except ValueError:
-        logging.info(color(f'!!! Invalid packet type 0x{packet[0]:02X}', 'red'))
-        raise
-
-    return (packet_type, packet[1:])
-
-
-def parse_packet_sequence(packet_data):
-    if len(packet_data) < 5:
-        logging.info(
-            color(
-                f'!!!Packet too short (got {len(packet_data)} bytes, need >= 5)',
-                'red',
-            )
-        )
-        raise ValueError('packet too short')
-    return struct.unpack_from('>bI', packet_data, 0)
-
-
 def le_phy_name(phy_id):
     return {HCI_LE_1M_PHY: '1M', HCI_LE_2M_PHY: '2M', HCI_LE_CODED_PHY: 'CODED'}.get(
         phy_id, HCI_Constant.le_phy_name(phy_id)
     )
 
 
+def print_connection_phy(phy):
+    logging.info(
+        color('@@@ PHY: ', 'yellow') + f'TX:{le_phy_name(phy.tx_phy)}/'
+        f'RX:{le_phy_name(phy.rx_phy)}'
+    )
+
+
 def print_connection(connection):
     params = []
-    if connection.transport == BT_LE_TRANSPORT:
-        params.append(
-            'PHY='
-            f'TX:{le_phy_name(connection.phy.tx_phy)}/'
-            f'RX:{le_phy_name(connection.phy.rx_phy)}'
-        )
-
+    if connection.transport == PhysicalTransport.LE:
         params.append(
             'DL=('
             f'TX:{connection.data_length[0]}/{connection.data_length[1]},'
@@ -148,9 +121,9 @@ def print_connection(connection):
 
         params.append(
             'Parameters='
-            f'{connection.parameters.connection_interval * 1.25:.2f}/'
+            f'{connection.parameters.connection_interval:.2f}/'
             f'{connection.parameters.peripheral_latency}/'
-            f'{connection.parameters.supervision_timeout * 10} '
+            f'{connection.parameters.supervision_timeout:.2f} '
         )
 
         params.append(f'MTU={connection.att_mtu}')
@@ -194,17 +167,19 @@ def make_sdp_records(channel):
     }
 
 
-def log_stats(title, stats):
+def log_stats(title, stats, precision=2):
     stats_min = min(stats)
     stats_max = max(stats)
-    stats_avg = sum(stats) / len(stats)
+    stats_avg = statistics.mean(stats)
+    stats_stdev = statistics.stdev(stats) if len(stats) >= 2 else 0
     logging.info(
         color(
             (
                 f'### {title} stats: '
-                f'min={stats_min:.2f}, '
-                f'max={stats_max:.2f}, '
-                f'average={stats_avg:.2f}'
+                f'min={stats_min:.{precision}f}, '
+                f'max={stats_max:.{precision}f}, '
+                f'average={stats_avg:.{precision}f}, '
+                f'stdev={stats_stdev:.{precision}f}'
             ),
             'cyan',
         )
@@ -212,7 +187,7 @@ def log_stats(title, stats):
 
 
 async def switch_roles(connection, role):
-    target_role = HCI_CENTRAL_ROLE if role == "central" else HCI_PERIPHERAL_ROLE
+    target_role = Role.CENTRAL if role == "central" else Role.PERIPHERAL
     if connection.role != target_role:
         logging.info(f'{color("### Switching roles to:", "cyan")} {role}')
         try:
@@ -222,13 +197,135 @@ async def switch_roles(connection, role):
             logging.info(f'{color("### Role switch failed:", "red")} {error}')
 
 
-class PacketType(enum.IntEnum):
-    RESET = 0
-    SEQUENCE = 1
-    ACK = 2
+# -----------------------------------------------------------------------------
+# Packet
+# -----------------------------------------------------------------------------
+@dataclasses.dataclass
+class Packet:
+    class PacketType(enum.IntEnum):
+        RESET = 0
+        SEQUENCE = 1
+        ACK = 2
+
+    class PacketFlags(enum.IntFlag):
+        LAST = 1
+
+    packet_type: PacketType
+    flags: PacketFlags = PacketFlags(0)
+    sequence: int = 0
+    timestamp: int = 0
+    payload: bytes = b""
+
+    @classmethod
+    def from_bytes(cls, data: bytes):
+        if len(data) < 1:
+            logging.warning(
+                color(f'!!! Packet too short (got {len(data)} bytes, need >= 1)', 'red')
+            )
+            raise ValueError('packet too short')
+
+        try:
+            packet_type = cls.PacketType(data[0])
+        except ValueError:
+            logging.warning(color(f'!!! Invalid packet type 0x{data[0]:02X}', 'red'))
+            raise
+
+        if packet_type == cls.PacketType.RESET:
+            return cls(packet_type)
+
+        flags = cls.PacketFlags(data[1])
+        (sequence,) = struct.unpack_from("<I", data, 2)
+
+        if packet_type == cls.PacketType.ACK:
+            if len(data) < 6:
+                logging.warning(
+                    color(
+                        f'!!! Packet too short (got {len(data)} bytes, need >= 6)',
+                        'red',
+                    )
+                )
+            return cls(packet_type, flags, sequence)
+
+        if len(data) < 10:
+            logging.warning(
+                color(
+                    f'!!! Packet too short (got {len(data)} bytes, need >= 10)', 'red'
+                )
+            )
+            raise ValueError('packet too short')
+
+        (timestamp,) = struct.unpack_from("<I", data, 6)
+        return cls(packet_type, flags, sequence, timestamp, data[10:])
+
+    def __bytes__(self):
+        if self.packet_type == self.PacketType.RESET:
+            return bytes([self.packet_type])
+
+        if self.packet_type == self.PacketType.ACK:
+            return struct.pack("<BBI", self.packet_type, self.flags, self.sequence)
+
+        return (
+            struct.pack(
+                "<BBII", self.packet_type, self.flags, self.sequence, self.timestamp
+            )
+            + self.payload
+        )
 
 
-PACKET_FLAG_LAST = 1
+# -----------------------------------------------------------------------------
+# Jitter Stats
+# -----------------------------------------------------------------------------
+class JitterStats:
+    def __init__(self):
+        self.reset()
+
+    def reset(self):
+        self.packets = []
+        self.receive_times = []
+        self.jitter = []
+
+    def on_packet_received(self, packet):
+        now = time.time()
+        self.packets.append(packet)
+        self.receive_times.append(now)
+
+        if packet.timestamp and len(self.packets) > 1:
+            expected_time = (
+                self.receive_times[0]
+                + (packet.timestamp - self.packets[0].timestamp) / 1000000
+            )
+            jitter = now - expected_time
+        else:
+            jitter = 0.0
+
+        self.jitter.append(jitter)
+        return jitter
+
+    def show_stats(self):
+        if len(self.jitter) < 3:
+            return
+        average = sum(self.jitter) / len(self.jitter)
+        adjusted = [jitter - average for jitter in self.jitter]
+
+        log_stats('Jitter (signed)', adjusted, 3)
+        log_stats('Jitter (absolute)', [abs(jitter) for jitter in adjusted], 3)
+
+        # Show a histogram
+        bin_count = 20
+        bins = [0] * bin_count
+        interval_min = min(adjusted)
+        interval_max = max(adjusted)
+        interval_range = interval_max - interval_min
+        bin_thresholds = [
+            interval_min + i * (interval_range / bin_count) for i in range(bin_count)
+        ]
+        for jitter in adjusted:
+            for i in reversed(range(bin_count)):
+                if jitter >= bin_thresholds[i]:
+                    bins[i] += 1
+                    break
+        for i in range(bin_count):
+            logging.info(f'@@@ >= {bin_thresholds[i]:.4f}: {bins[i]}')
 
 
 # -----------------------------------------------------------------------------
@@ -278,19 +375,37 @@ class Sender:
                 await asyncio.sleep(self.tx_start_delay)
 
             logging.info(color('=== Sending RESET', 'magenta'))
-            await self.packet_io.send_packet(bytes([PacketType.RESET]))
+            await self.packet_io.send_packet(
+                bytes(Packet(packet_type=Packet.PacketType.RESET))
+            )
+
             self.start_time = time.time()
             self.bytes_sent = 0
             for tx_i in range(self.tx_packet_count):
-                packet_flags = (
-                    PACKET_FLAG_LAST if tx_i == self.tx_packet_count - 1 else 0
+                if self.pace > 0:
+                    # Wait until it is time to send the next packet
+                    target_time = self.start_time + (tx_i * self.pace / 1000)
+                    now = time.time()
+                    if now < target_time:
+                        await asyncio.sleep(target_time - now)
+                else:
+                    await self.packet_io.drain()
+
+                packet = bytes(
+                    Packet(
+                        packet_type=Packet.PacketType.SEQUENCE,
+                        flags=(
+                            Packet.PacketFlags.LAST
+                            if tx_i == self.tx_packet_count - 1
+                            else 0
+                        ),
+                        sequence=tx_i,
+                        timestamp=int((time.time() - self.start_time) * 1000000),
+                        payload=bytes(
+                            self.tx_packet_size - 10 - self.packet_io.overhead_size
+                        ),
+                    )
                 )
-                packet = struct.pack(
-                    '>bbI',
-                    PacketType.SEQUENCE,
-                    packet_flags,
-                    tx_i,
-                ) + bytes(self.tx_packet_size - 6 - self.packet_io.overhead_size)
                 logging.info(
                     color(
                         f'Sending packet {tx_i}: {self.tx_packet_size} bytes', 'yellow'
@@ -298,14 +413,6 @@ class Sender:
                 )
                 self.bytes_sent += len(packet)
                 await self.packet_io.send_packet(packet)
-
-                if self.pace is None:
-                    continue
-
-                if self.pace > 0:
-                    await asyncio.sleep(self.pace / 1000)
-                else:
-                    await self.packet_io.drain()
 
             await self.done.wait()
 
@@ -318,13 +425,13 @@ class Sender:
         if self.repeat:
             logging.info(color('--- End of runs', 'blue'))
 
-    def on_packet_received(self, packet):
+    def on_packet_received(self, data):
         try:
-            packet_type, _ = parse_packet(packet)
+            packet = Packet.from_bytes(data)
         except ValueError:
             return
 
-        if packet_type == PacketType.ACK:
+        if packet.packet_type == Packet.PacketType.ACK:
             elapsed = time.time() - self.start_time
             average_tx_speed = self.bytes_sent / elapsed
             self.stats.append(average_tx_speed)
@@ -347,52 +454,53 @@ class Receiver:
     last_timestamp: float
 
     def __init__(self, packet_io, linger):
-        self.reset()
+        self.jitter_stats = JitterStats()
         self.packet_io = packet_io
         self.packet_io.packet_listener = self
         self.linger = linger
         self.done = asyncio.Event()
+        self.reset()
 
     def reset(self):
         self.expected_packet_index = 0
         self.measurements = [(time.time(), 0)]
         self.total_bytes_received = 0
+        self.jitter_stats.reset()
 
-    def on_packet_received(self, packet):
+    def on_packet_received(self, data):
         try:
-            packet_type, packet_data = parse_packet(packet)
+            packet = Packet.from_bytes(data)
         except ValueError:
+            logging.exception("invalid packet")
             return
 
-        if packet_type == PacketType.RESET:
+        if packet.packet_type == Packet.PacketType.RESET:
             logging.info(color('=== Received RESET', 'magenta'))
             self.reset()
             return
 
-        try:
-            packet_flags, packet_index = parse_packet_sequence(packet_data)
-        except ValueError:
-            return
+        jitter = self.jitter_stats.on_packet_received(packet)
         logging.info(
-            f'<<< Received packet {packet_index}: '
-            f'flags=0x{packet_flags:02X}, '
-            f'{len(packet) + self.packet_io.overhead_size} bytes'
+            f'<<< Received packet {packet.sequence}: '
+            f'flags={packet.flags}, '
+            f'jitter={jitter:.4f}, '
+            f'{len(data) + self.packet_io.overhead_size} bytes',
         )
 
-        if packet_index != self.expected_packet_index:
+        if packet.sequence != self.expected_packet_index:
             logging.info(
                 color(
                     f'!!! Unexpected packet, expected {self.expected_packet_index} '
-                    f'but received {packet_index}'
+                    f'but received {packet.sequence}'
                 )
             )
 
         now = time.time()
         elapsed_since_start = now - self.measurements[0][0]
         elapsed_since_last = now - self.measurements[-1][0]
-        self.measurements.append((now, len(packet)))
-        self.total_bytes_received += len(packet)
-        instant_rx_speed = len(packet) / elapsed_since_last
+        self.measurements.append((now, len(data)))
+        self.total_bytes_received += len(data)
+        instant_rx_speed = len(data) / elapsed_since_last
         average_rx_speed = self.total_bytes_received / elapsed_since_start
         window = self.measurements[-64:]
         windowed_rx_speed = sum(measurement[1] for measurement in window[1:]) / (
@@ -408,15 +516,17 @@ class Receiver:
             )
         )
 
-        self.expected_packet_index = packet_index + 1
+        self.expected_packet_index = packet.sequence + 1
 
-        if packet_flags & PACKET_FLAG_LAST:
+        if packet.flags & Packet.PacketFlags.LAST:
             AsyncRunner.spawn(
                 self.packet_io.send_packet(
-                    struct.pack('>bbI', PacketType.ACK, packet_flags, packet_index)
+                    bytes(Packet(Packet.PacketType.ACK, packet.flags, packet.sequence))
                 )
             )
             logging.info(color('@@@ Received last packet', 'green'))
+            self.jitter_stats.show_stats()
+
             if not self.linger:
                 self.done.set()
 
@@ -448,9 +558,9 @@ class Ping:
         self.repeat_delay = repeat_delay
         self.pace = pace
         self.done = asyncio.Event()
-        self.current_packet_index = 0
-        self.ping_sent_time = 0.0
-        self.latencies = []
+        self.ping_times = []
+        self.rtts = []
+        self.next_expected_packet_index = 0
         self.min_stats = []
         self.max_stats = []
         self.avg_stats = []
@@ -465,6 +575,7 @@ class Ping:
 
         for run in range(self.repeat + 1):
             self.done.clear()
+            self.ping_times = []
 
             if run > 0 and self.repeat and self.repeat_delay:
                 logging.info(color(f'*** Repeat delay: {self.repeat_delay}', 'green'))
@@ -475,97 +586,96 @@ class Ping:
                 await asyncio.sleep(self.tx_start_delay)
 
             logging.info(color('=== Sending RESET', 'magenta'))
-            await self.packet_io.send_packet(bytes([PacketType.RESET]))
+            await self.packet_io.send_packet(bytes(Packet(Packet.PacketType.RESET)))
 
-            self.current_packet_index = 0
-            self.latencies = []
-            await self.send_next_ping()
+            start_time = time.time()
+            self.next_expected_packet_index = 0
+            for i in range(self.tx_packet_count):
+                target_time = start_time + (i * self.pace / 1000)
+                now = time.time()
+                if now < target_time:
+                    await asyncio.sleep(target_time - now)
+                    now = time.time()
+
+                packet = bytes(
+                    Packet(
+                        packet_type=Packet.PacketType.SEQUENCE,
+                        flags=(
+                            Packet.PacketFlags.LAST
+                            if i == self.tx_packet_count - 1
+                            else 0
+                        ),
+                        sequence=i,
+                        timestamp=int((now - start_time) * 1000000),
+                        payload=bytes(self.tx_packet_size - 10),
+                    )
+                )
+                logging.info(color(f'Sending packet {i}', 'yellow'))
+                self.ping_times.append(now)
+                await self.packet_io.send_packet(packet)
 
             await self.done.wait()
 
-            min_latency = min(self.latencies)
-            max_latency = max(self.latencies)
-            avg_latency = sum(self.latencies) / len(self.latencies)
+            min_rtt = min(self.rtts)
+            max_rtt = max(self.rtts)
+            avg_rtt = statistics.mean(self.rtts)
+            stdev_rtt = statistics.stdev(self.rtts)
             logging.info(
                 color(
-                    '@@@ Latencies: '
-                    f'min={min_latency:.2f}, '
-                    f'max={max_latency:.2f}, '
-                    f'average={avg_latency:.2f}'
+                    '@@@ RTTs: '
+                    f'min={min_rtt:.2f}, '
+                    f'max={max_rtt:.2f}, '
+                    f'average={avg_rtt:.2f}, '
+                    f'stdev={stdev_rtt:.2f}'
                 )
             )
 
-            self.min_stats.append(min_latency)
-            self.max_stats.append(max_latency)
-            self.avg_stats.append(avg_latency)
+            self.min_stats.append(min_rtt)
+            self.max_stats.append(max_rtt)
+            self.avg_stats.append(avg_rtt)
 
             run_counter = f'[{run + 1} of {self.repeat + 1}]' if self.repeat else ''
             logging.info(color(f'=== {run_counter} Done!', 'magenta'))
 
             if self.repeat:
-                log_stats('Min Latency', self.min_stats)
-                log_stats('Max Latency', self.max_stats)
-                log_stats('Average Latency', self.avg_stats)
+                log_stats('Min RTT', self.min_stats)
+                log_stats('Max RTT', self.max_stats)
+                log_stats('Average RTT', self.avg_stats)
 
         if self.repeat:
             logging.info(color('--- End of runs', 'blue'))
 
-    async def send_next_ping(self):
-        if self.pace:
-            await asyncio.sleep(self.pace / 1000)
-
-        packet = struct.pack(
-            '>bbI',
-            PacketType.SEQUENCE,
-            (
-                PACKET_FLAG_LAST
-                if self.current_packet_index == self.tx_packet_count - 1
-                else 0
-            ),
-            self.current_packet_index,
-        ) + bytes(self.tx_packet_size - 6)
-        logging.info(color(f'Sending packet {self.current_packet_index}', 'yellow'))
-        self.ping_sent_time = time.time()
-        await self.packet_io.send_packet(packet)
-
-    def on_packet_received(self, packet):
-        elapsed = time.time() - self.ping_sent_time
-
+    def on_packet_received(self, data):
         try:
-            packet_type, packet_data = parse_packet(packet)
+            packet = Packet.from_bytes(data)
         except ValueError:
             return
 
-        try:
-            packet_flags, packet_index = parse_packet_sequence(packet_data)
-        except ValueError:
-            return
-
-        if packet_type == PacketType.ACK:
-            latency = elapsed * 1000
-            self.latencies.append(latency)
+        if packet.packet_type == Packet.PacketType.ACK:
+            elapsed = time.time() - self.ping_times[packet.sequence]
+            rtt = elapsed * 1000
+            self.rtts.append(rtt)
             logging.info(
                 color(
-                    f'<<< Received ACK [{packet_index}], latency={latency:.2f}ms',
+                    f'<<< Received ACK [{packet.sequence}], RTT={rtt:.2f}ms',
                     'green',
                 )
             )
 
-            if packet_index == self.current_packet_index:
-                self.current_packet_index += 1
+            if packet.sequence == self.next_expected_packet_index:
+                self.next_expected_packet_index += 1
             else:
                 logging.info(
                     color(
-                        f'!!! Unexpected packet, expected {self.current_packet_index} '
-                        f'but received {packet_index}'
+                        f'!!! Unexpected packet, '
+                        f'expected {self.next_expected_packet_index} '
+                        f'but received {packet.sequence}'
                     )
                 )
 
-        if packet_flags & PACKET_FLAG_LAST:
+        if packet.flags & Packet.PacketFlags.LAST:
             self.done.set()
             return
-
-        AsyncRunner.spawn(self.send_next_ping())
 
 
 # -----------------------------------------------------------------------------
@@ -575,56 +685,59 @@ class Pong:
     expected_packet_index: int
 
     def __init__(self, packet_io, linger):
-        self.reset()
+        self.jitter_stats = JitterStats()
         self.packet_io = packet_io
         self.packet_io.packet_listener = self
         self.linger = linger
         self.done = asyncio.Event()
+        self.reset()
 
     def reset(self):
         self.expected_packet_index = 0
+        self.jitter_stats.reset()
 
-    def on_packet_received(self, packet):
+    def on_packet_received(self, data):
         try:
-            packet_type, packet_data = parse_packet(packet)
+            packet = Packet.from_bytes(data)
         except ValueError:
             return
 
-        if packet_type == PacketType.RESET:
+        if packet.packet_type == Packet.PacketType.RESET:
             logging.info(color('=== Received RESET', 'magenta'))
             self.reset()
             return
 
-        try:
-            packet_flags, packet_index = parse_packet_sequence(packet_data)
-        except ValueError:
-            return
+        jitter = self.jitter_stats.on_packet_received(packet)
         logging.info(
             color(
-                f'<<< Received packet {packet_index}: '
-                f'flags=0x{packet_flags:02X}, {len(packet)} bytes',
+                f'<<< Received packet {packet.sequence}: '
+                f'flags={packet.flags}, {len(data)} bytes, '
+                f'jitter={jitter:.4f}',
                 'green',
             )
         )
 
-        if packet_index != self.expected_packet_index:
+        if packet.sequence != self.expected_packet_index:
             logging.info(
                 color(
                     f'!!! Unexpected packet, expected {self.expected_packet_index} '
-                    f'but received {packet_index}'
+                    f'but received {packet.sequence}'
                 )
             )
 
-        self.expected_packet_index = packet_index + 1
+        self.expected_packet_index = packet.sequence + 1
 
         AsyncRunner.spawn(
             self.packet_io.send_packet(
-                struct.pack('>bbI', PacketType.ACK, packet_flags, packet_index)
+                bytes(Packet(Packet.PacketType.ACK, packet.flags, packet.sequence))
             )
         )
 
-        if packet_flags & PACKET_FLAG_LAST and not self.linger:
-            self.done.set()
+        if packet.flags & Packet.PacketFlags.LAST:
+            self.jitter_stats.show_stats()
+
+            if not self.linger:
+                self.done.set()
 
     async def run(self):
         await self.done.wait()
@@ -942,9 +1055,12 @@ class RfcommClient(StreamedPacketIO):
             channel = await bumble.rfcomm.find_rfcomm_channel_with_uuid(
                 connection, self.uuid
             )
-            logging.info(color(f'@@@ Channel number = {channel}', 'cyan'))
-            if channel == 0:
-                logging.info(color('!!! No RFComm service with this UUID found', 'red'))
+            if channel:
+                logging.info(color(f'@@@ Channel number = {channel}', 'cyan'))
+            else:
+                logging.warning(
+                    color('!!! No RFComm service with this UUID found', 'red')
+                )
                 await connection.disconnect()
                 return
 
@@ -1054,6 +1170,8 @@ class RfcommServer(StreamedPacketIO):
         if self.credits_threshold is not None:
             dlc.rx_credits_threshold = self.credits_threshold
 
+        self.ready.set()
+
     async def drain(self):
         assert self.dlc
         await self.dlc.drain()
@@ -1068,7 +1186,7 @@ class Central(Connection.Listener):
         transport,
         peripheral_address,
         classic,
-        role_factory,
+        scenario_factory,
         mode_factory,
         connection_interval,
         phy,
@@ -1081,7 +1199,7 @@ class Central(Connection.Listener):
         self.transport = transport
         self.peripheral_address = peripheral_address
         self.classic = classic
-        self.role_factory = role_factory
+        self.scenario_factory = scenario_factory
         self.mode_factory = mode_factory
         self.authenticate = authenticate
         self.encrypt = encrypt or authenticate
@@ -1134,10 +1252,11 @@ class Central(Connection.Listener):
                 DEFAULT_CENTRAL_NAME, central_address, hci_source, hci_sink
             )
             mode = self.mode_factory(self.device)
-            role = self.role_factory(mode)
+            scenario = self.scenario_factory(mode)
             self.device.classic_enabled = self.classic
 
             # Set up a pairing config factory with minimal requirements.
+            self.device.config.keystore = "JsonKeyStore"
             self.device.pairing_config_factory = lambda _: PairingConfig(
                 sc=False, mitm=False, bonding=False
             )
@@ -1155,7 +1274,11 @@ class Central(Connection.Listener):
                 self.connection = await self.device.connect(
                     self.peripheral_address,
                     connection_parameters_preferences=self.connection_parameter_preferences,
-                    transport=BT_BR_EDR_TRANSPORT if self.classic else BT_LE_TRANSPORT,
+                    transport=(
+                        PhysicalTransport.BR_EDR
+                        if self.classic
+                        else PhysicalTransport.LE
+                    ),
                 )
             except CommandTimeoutError:
                 logging.info(color('!!! Connection timed out', 'red'))
@@ -1169,6 +1292,10 @@ class Central(Connection.Listener):
             logging.info(color('### Connected', 'cyan'))
             self.connection.listener = self
             print_connection(self.connection)
+
+            if not self.classic:
+                phy = await self.connection.get_phy()
+                print_connection_phy(phy)
 
             # Switch roles if needed.
             if self.role_switch:
@@ -1215,7 +1342,7 @@ class Central(Connection.Listener):
 
             await mode.on_connection(self.connection)
 
-            await role.run()
+            await scenario.run()
             await asyncio.sleep(DEFAULT_LINGER_TIME)
             await self.connection.disconnect()
 
@@ -1226,8 +1353,8 @@ class Central(Connection.Listener):
     def on_connection_parameters_update(self):
         print_connection(self.connection)
 
-    def on_connection_phy_update(self):
-        print_connection(self.connection)
+    def on_connection_phy_update(self, phy):
+        print_connection_phy(phy)
 
     def on_connection_att_mtu_update(self):
         print_connection(self.connection)
@@ -1246,7 +1373,7 @@ class Peripheral(Device.Listener, Connection.Listener):
     def __init__(
         self,
         transport,
-        role_factory,
+        scenario_factory,
         mode_factory,
         classic,
         extended_data_length,
@@ -1254,11 +1381,11 @@ class Peripheral(Device.Listener, Connection.Listener):
     ):
         self.transport = transport
         self.classic = classic
-        self.role_factory = role_factory
+        self.scenario_factory = scenario_factory
         self.mode_factory = mode_factory
         self.extended_data_length = extended_data_length
         self.role_switch = role_switch
-        self.role = None
+        self.scenario = None
         self.mode = None
         self.device = None
         self.connection = None
@@ -1278,10 +1405,11 @@ class Peripheral(Device.Listener, Connection.Listener):
             )
             self.device.listener = self
             self.mode = self.mode_factory(self.device)
-            self.role = self.role_factory(self.mode)
+            self.scenario = self.scenario_factory(self.mode)
             self.device.classic_enabled = self.classic
 
             # Set up a pairing config factory with minimal requirements.
+            self.device.config.keystore = "JsonKeyStore"
             self.device.pairing_config_factory = lambda _: PairingConfig(
                 sc=False, mitm=False, bonding=False
             )
@@ -1315,7 +1443,7 @@ class Peripheral(Device.Listener, Connection.Listener):
             print_connection(self.connection)
 
             await self.mode.on_connection(self.connection)
-            await self.role.run()
+            await self.scenario.run()
             await asyncio.sleep(DEFAULT_LINGER_TIME)
 
     def on_connection(self, connection):
@@ -1344,7 +1472,7 @@ class Peripheral(Device.Listener, Connection.Listener):
     def on_disconnection(self, reason):
         logging.info(color(f'!!! Disconnection: reason={reason}', 'red'))
         self.connection = None
-        self.role.reset()
+        self.scenario.reset()
 
         if self.classic:
             AsyncRunner.spawn(self.device.set_discoverable(True))
@@ -1353,8 +1481,8 @@ class Peripheral(Device.Listener, Connection.Listener):
     def on_connection_parameters_update(self):
         print_connection(self.connection)
 
-    def on_connection_phy_update(self):
-        print_connection(self.connection)
+    def on_connection_phy_update(self, phy):
+        print_connection_phy(phy)
 
     def on_connection_att_mtu_update(self):
         print_connection(self.connection)
@@ -1426,13 +1554,13 @@ def create_mode_factory(ctx, default_mode):
 
 
 # -----------------------------------------------------------------------------
-def create_role_factory(ctx, default_role):
-    role = ctx.obj['role']
-    if role is None:
-        role = default_role
+def create_scenario_factory(ctx, default_scenario):
+    scenario = ctx.obj['scenario']
+    if scenario is None:
+        scenario = default_scenario
 
-    def create_role(packet_io):
-        if role == 'sender':
+    def create_scenario(packet_io):
+        if scenario == 'send':
             return Sender(
                 packet_io,
                 start_delay=ctx.obj['start_delay'],
@@ -1443,10 +1571,10 @@ def create_role_factory(ctx, default_role):
                 packet_count=ctx.obj['packet_count'],
             )
 
-        if role == 'receiver':
+        if scenario == 'receive':
             return Receiver(packet_io, ctx.obj['linger'])
 
-        if role == 'ping':
+        if scenario == 'ping':
             return Ping(
                 packet_io,
                 start_delay=ctx.obj['start_delay'],
@@ -1457,12 +1585,12 @@ def create_role_factory(ctx, default_role):
                 packet_count=ctx.obj['packet_count'],
             )
 
-        if role == 'pong':
+        if scenario == 'pong':
             return Pong(packet_io, ctx.obj['linger'])
 
-        raise ValueError('invalid role')
+        raise ValueError('invalid scenario')
 
-    return create_role
+    return create_scenario
 
 
 # -----------------------------------------------------------------------------
@@ -1470,7 +1598,7 @@ def create_role_factory(ctx, default_role):
 # -----------------------------------------------------------------------------
 @click.group()
 @click.option('--device-config', metavar='FILENAME', help='Device configuration file')
-@click.option('--role', type=click.Choice(['sender', 'receiver', 'ping', 'pong']))
+@click.option('--scenario', type=click.Choice(['send', 'receive', 'ping', 'pong']))
 @click.option(
     '--mode',
     type=click.Choice(
@@ -1488,6 +1616,7 @@ def create_role_factory(ctx, default_role):
     '--att-mtu',
     metavar='MTU',
     type=click.IntRange(23, 517),
+    default=517,
     help='GATT MTU (gatt-client mode)',
 )
 @click.option(
@@ -1503,7 +1632,7 @@ def create_role_factory(ctx, default_role):
     '--rfcomm-channel',
     type=int,
     default=DEFAULT_RFCOMM_CHANNEL,
-    help='RFComm channel to use',
+    help='RFComm channel to use (specify 0 for channel discovery via SDP)',
 )
 @click.option(
     '--rfcomm-uuid',
@@ -1563,9 +1692,9 @@ def create_role_factory(ctx, default_role):
     '--packet-size',
     '-s',
     metavar='SIZE',
-    type=click.IntRange(8, 8192),
+    type=click.IntRange(10, 8192),
     default=500,
-    help='Packet size (client or ping role)',
+    help='Packet size (send or ping scenario)',
 )
 @click.option(
     '--packet-count',
@@ -1573,7 +1702,7 @@ def create_role_factory(ctx, default_role):
     metavar='COUNT',
     type=int,
     default=10,
-    help='Packet count (client or ping role)',
+    help='Packet count (send or ping scenario)',
 )
 @click.option(
     '--start-delay',
@@ -1581,7 +1710,7 @@ def create_role_factory(ctx, default_role):
     metavar='SECONDS',
     type=int,
     default=1,
-    help='Start delay (client or ping role)',
+    help='Start delay (send or ping scenario)',
 )
 @click.option(
     '--repeat',
@@ -1589,7 +1718,7 @@ def create_role_factory(ctx, default_role):
     type=int,
     default=0,
     help=(
-        'Repeat the run N times (client and ping roles)'
+        'Repeat the run N times (send and ping scenario)'
         '(0, which is the fault, to run just once) '
     ),
 )
@@ -1613,13 +1742,13 @@ def create_role_factory(ctx, default_role):
 @click.option(
     '--linger',
     is_flag=True,
-    help="Don't exit at the end of a run (server and pong roles)",
+    help="Don't exit at the end of a run (receive and pong scenarios)",
 )
 @click.pass_context
 def bench(
     ctx,
     device_config,
-    role,
+    scenario,
     mode,
     att_mtu,
     extended_data_length,
@@ -1645,7 +1774,7 @@ def bench(
 ):
     ctx.ensure_object(dict)
     ctx.obj['device_config'] = device_config
-    ctx.obj['role'] = role
+    ctx.obj['scenario'] = scenario
     ctx.obj['mode'] = mode
     ctx.obj['att_mtu'] = att_mtu
     ctx.obj['rfcomm_channel'] = rfcomm_channel
@@ -1699,7 +1828,7 @@ def central(
     ctx, transport, peripheral_address, connection_interval, phy, authenticate, encrypt
 ):
     """Run as a central (initiates the connection)"""
-    role_factory = create_role_factory(ctx, 'sender')
+    scenario_factory = create_scenario_factory(ctx, 'send')
     mode_factory = create_mode_factory(ctx, 'gatt-client')
     classic = ctx.obj['classic']
 
@@ -1708,7 +1837,7 @@ def central(
             transport,
             peripheral_address,
             classic,
-            role_factory,
+            scenario_factory,
             mode_factory,
             connection_interval,
             phy,
@@ -1726,13 +1855,13 @@ def central(
 @click.pass_context
 def peripheral(ctx, transport):
     """Run as a peripheral (waits for a connection)"""
-    role_factory = create_role_factory(ctx, 'receiver')
+    scenario_factory = create_scenario_factory(ctx, 'receive')
     mode_factory = create_mode_factory(ctx, 'gatt-server')
 
     async def run_peripheral():
         await Peripheral(
             transport,
-            role_factory,
+            scenario_factory,
             mode_factory,
             ctx.obj['classic'],
             ctx.obj['extended_data_length'],
@@ -1743,7 +1872,11 @@ def peripheral(ctx, transport):
 
 
 def main():
-    logging.basicConfig(level=os.environ.get('BUMBLE_LOGLEVEL', 'INFO').upper())
+    logging.basicConfig(
+        level=os.environ.get('BUMBLE_LOGLEVEL', 'INFO').upper(),
+        format="[%(asctime)s.%(msecs)03d] %(levelname)s:%(name)s:%(message)s",
+        datefmt="%H:%M:%S",
+    )
     bench()
 
 

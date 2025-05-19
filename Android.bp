@@ -21,11 +21,13 @@ python_library_host {
         "bumble/*.py",
         "bumble/drivers/*.py",
         "bumble/profiles/*.py",
-        "bumble/transport/*.py",
+        "bumble/transport/**/*.py",
+        "bumble/crypto/*.py",
     ],
     libs: [
+        "libprotobuf-python",
         "pyee",
-    ]
+    ],
 }
 
 python_library_host {
@@ -36,9 +38,8 @@ python_library_host {
     libs: [
         "bumble",
         "pandora-python",
-        "libprotobuf-python",
     ],
     data: [
-        "bumble/pandora/py.typed"
-    ]
+        "bumble/pandora/py.typed",
+    ],
 }

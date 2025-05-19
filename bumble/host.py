@@ -1,4 +1,4 @@
-# Copyright 2021-2022 Google LLC
+# Copyright 2021-2025 Google LLC
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -34,22 +34,23 @@ from typing import (
     TYPE_CHECKING,
 )
 
+
 from bumble.colors import color
 from bumble.l2cap import L2CAP_PDU
 from bumble.snoop import Snooper
 from bumble import drivers
 from bumble import hci
 from bumble.core import (
-    BT_BR_EDR_TRANSPORT,
-    BT_LE_TRANSPORT,
+    PhysicalTransport,
+    PhysicalTransport,
     ConnectionPHY,
     ConnectionParameters,
 )
-from bumble.utils import AbortableEventEmitter
+from bumble import utils
 from bumble.transport.common import TransportLostError
 
 if TYPE_CHECKING:
-    from .transport.common import TransportSink, TransportSource
+    from bumble.transport.common import TransportSink, TransportSource
 
 
 # -----------------------------------------------------------------------------
@@ -59,7 +60,19 @@ logger = logging.getLogger(__name__)
 
 
 # -----------------------------------------------------------------------------
-class AclPacketQueue:
+class DataPacketQueue(utils.EventEmitter):
+    """
+    Flow-control queue for host->controller data packets (ACL, ISO).
+
+    The queue holds packets associated with a connection handle. The packets
+    are sent to the controller, up to a maximum total number of packets in flight.
+    A packet is considered to be "in flight" when it has been sent to the controller
+    but not completed yet. Packets are no longer "in flight" when the controller
+    declares them as completed.
+
+    The queue emits a 'flow' event whenever one or more packets are completed.
+    """
+
     max_packet_size: int
 
     def __init__(
@@ -68,55 +81,124 @@ class AclPacketQueue:
         max_in_flight: int,
         send: Callable[[hci.HCI_Packet], None],
     ) -> None:
+        super().__init__()
         self.max_packet_size = max_packet_size
         self.max_in_flight = max_in_flight
-        self.in_flight = 0
-        self.send = send
-        self.packets: Deque[hci.HCI_AclDataPacket] = collections.deque()
+        self._in_flight = 0  # Total number of packets in flight across all connections
+        self._in_flight_per_connection: dict[int, int] = collections.defaultdict(
+            int
+        )  # Number of packets in flight per connection
+        self._send = send
+        self._packets: Deque[tuple[hci.HCI_Packet, int]] = collections.deque()
+        self._queued = 0
+        self._completed = 0
 
-    def enqueue(self, packet: hci.HCI_AclDataPacket) -> None:
-        self.packets.appendleft(packet)
-        self.check_queue()
+    @property
+    def queued(self) -> int:
+        """Total number of packets queued since creation."""
+        return self._queued
 
-        if self.packets:
+    @property
+    def completed(self) -> int:
+        """Total number of packets completed since creation."""
+        return self._completed
+
+    @property
+    def pending(self) -> int:
+        """Number of packets that have been queued but not completed."""
+        return self._queued - self._completed
+
+    def enqueue(self, packet: hci.HCI_Packet, connection_handle: int) -> None:
+        """Enqueue a packet associated with a connection"""
+        self._packets.appendleft((packet, connection_handle))
+        self._queued += 1
+        self._check_queue()
+
+        if self._packets:
             logger.debug(
-                f'{self.in_flight} ACL packets in flight, '
-                f'{len(self.packets)} in queue'
+                f'{self._in_flight} packets in flight, '
+                f'{len(self._packets)} in queue'
             )
 
-    def check_queue(self) -> None:
-        while self.packets and self.in_flight < self.max_in_flight:
-            packet = self.packets.pop()
-            self.send(packet)
-            self.in_flight += 1
+    def flush(self, connection_handle: int) -> None:
+        """
+        Remove all packets associated with a connection.
 
-    def on_packets_completed(self, packet_count: int) -> None:
-        if packet_count > self.in_flight:
+        All packets associated with the connection that are in flight are implicitly
+        marked as completed, but no 'flow' event is emitted.
+        """
+
+        packets_to_keep = [
+            (packet, handle)
+            for (packet, handle) in self._packets
+            if handle != connection_handle
+        ]
+        if flushed_count := len(self._packets) - len(packets_to_keep):
+            self._completed += flushed_count
+            self._packets = collections.deque(packets_to_keep)
+
+        if connection_handle in self._in_flight_per_connection:
+            in_flight = self._in_flight_per_connection[connection_handle]
+            self._completed += in_flight
+            self._in_flight -= in_flight
+            del self._in_flight_per_connection[connection_handle]
+
+    def _check_queue(self) -> None:
+        while self._packets and self._in_flight < self.max_in_flight:
+            packet, connection_handle = self._packets.pop()
+            self._send(packet)
+            self._in_flight += 1
+            self._in_flight_per_connection[connection_handle] += 1
+
+    def on_packets_completed(self, packet_count: int, connection_handle: int) -> None:
+        """Mark one or more packets associated with a connection as completed."""
+        if connection_handle not in self._in_flight_per_connection:
             logger.warning(
-                color(
-                    '!!! {packet_count} completed but only '
-                    f'{self.in_flight} in flight'
-                )
+                f'received completion for unknown connection {connection_handle}'
             )
-            packet_count = self.in_flight
+            return
 
-        self.in_flight -= packet_count
-        self.check_queue()
+        in_flight_for_connection = self._in_flight_per_connection[connection_handle]
+        if packet_count <= in_flight_for_connection:
+            self._in_flight_per_connection[connection_handle] -= packet_count
+        else:
+            logger.warning(
+                f'{packet_count} completed for {connection_handle} '
+                f'but only {in_flight_for_connection} in flight'
+            )
+            self._in_flight_per_connection[connection_handle] = 0
+
+        if packet_count <= self._in_flight:
+            self._in_flight -= packet_count
+            self._completed += packet_count
+        else:
+            logger.warning(
+                f'{packet_count} completed but only {self._in_flight} in flight'
+            )
+            self._in_flight = 0
+            self._completed = self._queued
+
+        self._check_queue()
+        self.emit('flow')
 
 
 # -----------------------------------------------------------------------------
 class Connection:
     def __init__(
-        self, host: Host, handle: int, peer_address: hci.Address, transport: int
+        self,
+        host: Host,
+        handle: int,
+        peer_address: hci.Address,
+        transport: PhysicalTransport,
     ):
         self.host = host
         self.handle = handle
         self.peer_address = peer_address
         self.assembler = hci.HCI_AclDataPacketAssembler(self.on_acl_pdu)
         self.transport = transport
-        acl_packet_queue: Optional[AclPacketQueue] = (
+        acl_packet_queue: Optional[DataPacketQueue] = (
             host.le_acl_packet_queue
-            if transport == BT_LE_TRANSPORT
+            if transport == PhysicalTransport.LE
             else host.acl_packet_queue
         )
         assert acl_packet_queue
@@ -129,28 +211,37 @@ class Connection:
         l2cap_pdu = L2CAP_PDU.from_bytes(pdu)
         self.host.on_l2cap_pdu(self, l2cap_pdu.cid, l2cap_pdu.payload)
 
+    def __str__(self) -> str:
+        return (
+            f'Connection(transport={self.transport}, peer_address={self.peer_address})'
+        )
+
 
 # -----------------------------------------------------------------------------
 @dataclasses.dataclass
 class ScoLink:
     peer_address: hci.Address
-    handle: int
+    connection_handle: int
 
 
 # -----------------------------------------------------------------------------
 @dataclasses.dataclass
-class CisLink:
-    peer_address: hci.Address
+class IsoLink:
     handle: int
+    packet_queue: DataPacketQueue = dataclasses.field(repr=False)
+    packet_sequence_number: int = 0
 
 
 # -----------------------------------------------------------------------------
-class Host(AbortableEventEmitter):
+class Host(utils.EventEmitter):
     connections: Dict[int, Connection]
-    cis_links: Dict[int, CisLink]
+    cis_links: Dict[int, IsoLink]
+    bis_links: Dict[int, IsoLink]
     sco_links: Dict[int, ScoLink]
-    acl_packet_queue: Optional[AclPacketQueue] = None
-    le_acl_packet_queue: Optional[AclPacketQueue] = None
+    bigs: dict[int, set[int]]
+    acl_packet_queue: Optional[DataPacketQueue] = None
+    le_acl_packet_queue: Optional[DataPacketQueue] = None
+    iso_packet_queue: Optional[DataPacketQueue] = None
     hci_sink: Optional[TransportSink] = None
     hci_metadata: Dict[str, Any]
     long_term_key_provider: Optional[
@@ -169,7 +260,9 @@ class Host(AbortableEventEmitter):
         self.ready = False  # True when we can accept incoming packets
         self.connections = {}  # Connections, by connection handle
         self.cis_links = {}  # CIS links, by connection handle
+        self.bis_links = {}  # BIS links, by connection handle
         self.sco_links = {}  # SCO links, by connection handle
+        self.bigs = {}  # BIG Handle to BIS Handles
         self.pending_command = None
         self.pending_response: Optional[asyncio.Future[Any]] = None
         self.number_of_supported_advertising_sets = 0
@@ -199,7 +292,7 @@ class Host(AbortableEventEmitter):
         check_address_type: bool = False,
     ) -> Optional[Connection]:
         for connection in self.connections.values():
-            if connection.peer_address.to_bytes() == bd_addr.to_bytes():
+            if bytes(connection.peer_address) == bytes(bd_addr):
                 if (
                     check_address_type
                     and connection.peer_address.address_type != bd_addr.address_type
@@ -342,6 +435,14 @@ class Host(AbortableEventEmitter):
                 )
             )
         )
+        if self.supports_command(hci.HCI_SET_EVENT_MASK_PAGE_2_COMMAND):
+            await self.send_command(
+                hci.HCI_Set_Event_Mask_Page_2_Command(
+                    event_mask_page_2=hci.HCI_Set_Event_Mask_Page_2_Command.mask(
+                        [hci.HCI_ENCRYPTION_CHANGE_V2_EVENT]
+                    )
+                )
+            )
 
         if (
             self.local_version is not None
@@ -363,6 +464,7 @@ class Host(AbortableEventEmitter):
                     hci.HCI_LE_READ_LOCAL_P_256_PUBLIC_KEY_COMPLETE_EVENT,
                     hci.HCI_LE_GENERATE_DHKEY_COMPLETE_EVENT,
                     hci.HCI_LE_ENHANCED_CONNECTION_COMPLETE_EVENT,
+                    hci.HCI_LE_ENHANCED_CONNECTION_COMPLETE_V2_EVENT,
                     hci.HCI_LE_DIRECTED_ADVERTISING_REPORT_EVENT,
                     hci.HCI_LE_PHY_UPDATE_COMPLETE_EVENT,
                     hci.HCI_LE_EXTENDED_ADVERTISING_REPORT_EVENT,
@@ -387,6 +489,12 @@ class Host(AbortableEventEmitter):
                     hci.HCI_LE_TRANSMIT_POWER_REPORTING_EVENT,
                     hci.HCI_LE_BIGINFO_ADVERTISING_REPORT_EVENT,
                     hci.HCI_LE_SUBRATE_CHANGE_EVENT,
+                    hci.HCI_LE_CS_READ_REMOTE_SUPPORTED_CAPABILITIES_COMPLETE_EVENT,
+                    hci.HCI_LE_CS_PROCEDURE_ENABLE_COMPLETE_EVENT,
+                    hci.HCI_LE_CS_SECURITY_ENABLE_COMPLETE_EVENT,
+                    hci.HCI_LE_CS_CONFIG_COMPLETE_EVENT,
+                    hci.HCI_LE_CS_SUBEVENT_RESULT_EVENT,
+                    hci.HCI_LE_CS_SUBEVENT_RESULT_CONTINUE_EVENT,
                 ]
             )
 
@@ -411,39 +519,70 @@ class Host(AbortableEventEmitter):
                 f'hc_total_num_acl_data_packets={hc_total_num_acl_data_packets}'
             )
 
-            self.acl_packet_queue = AclPacketQueue(
+            self.acl_packet_queue = DataPacketQueue(
                 max_packet_size=hc_acl_data_packet_length,
                 max_in_flight=hc_total_num_acl_data_packets,
                 send=self.send_hci_packet,
             )
 
-        hc_le_acl_data_packet_length = 0
-        hc_total_num_le_acl_data_packets = 0
-        if self.supports_command(hci.HCI_LE_READ_BUFFER_SIZE_COMMAND):
+        le_acl_data_packet_length = 0
+        total_num_le_acl_data_packets = 0
+        iso_data_packet_length = 0
+        total_num_iso_data_packets = 0
+        if self.supports_command(hci.HCI_LE_READ_BUFFER_SIZE_V2_COMMAND):
+            response = await self.send_command(
+                hci.HCI_LE_Read_Buffer_Size_V2_Command(), check_result=True
+            )
+            le_acl_data_packet_length = (
+                response.return_parameters.le_acl_data_packet_length
+            )
+            total_num_le_acl_data_packets = (
+                response.return_parameters.total_num_le_acl_data_packets
+            )
+            iso_data_packet_length = response.return_parameters.iso_data_packet_length
+            total_num_iso_data_packets = (
+                response.return_parameters.total_num_iso_data_packets
+            )
+
+            logger.debug(
+                'HCI LE flow control: '
+                f'le_acl_data_packet_length={le_acl_data_packet_length},'
+                f'total_num_le_acl_data_packets={total_num_le_acl_data_packets}'
+                f'iso_data_packet_length={iso_data_packet_length},'
+                f'total_num_iso_data_packets={total_num_iso_data_packets}'
+            )
+        elif self.supports_command(hci.HCI_LE_READ_BUFFER_SIZE_COMMAND):
             response = await self.send_command(
                 hci.HCI_LE_Read_Buffer_Size_Command(), check_result=True
             )
-            hc_le_acl_data_packet_length = (
-                response.return_parameters.hc_le_acl_data_packet_length
+            le_acl_data_packet_length = (
+                response.return_parameters.le_acl_data_packet_length
             )
-            hc_total_num_le_acl_data_packets = (
-                response.return_parameters.hc_total_num_le_acl_data_packets
+            total_num_le_acl_data_packets = (
+                response.return_parameters.total_num_le_acl_data_packets
             )
 
             logger.debug(
                 'HCI LE ACL flow control: '
-                f'hc_le_acl_data_packet_length={hc_le_acl_data_packet_length},'
-                f'hc_total_num_le_acl_data_packets={hc_total_num_le_acl_data_packets}'
+                f'le_acl_data_packet_length={le_acl_data_packet_length},'
+                f'total_num_le_acl_data_packets={total_num_le_acl_data_packets}'
             )
 
-        if hc_le_acl_data_packet_length == 0 or hc_total_num_le_acl_data_packets == 0:
+        if le_acl_data_packet_length == 0 or total_num_le_acl_data_packets == 0:
             # LE and Classic share the same queue
             self.le_acl_packet_queue = self.acl_packet_queue
         else:
             # Create a separate queue for LE
-            self.le_acl_packet_queue = AclPacketQueue(
-                max_packet_size=hc_le_acl_data_packet_length,
-                max_in_flight=hc_total_num_le_acl_data_packets,
+            self.le_acl_packet_queue = DataPacketQueue(
+                max_packet_size=le_acl_data_packet_length,
+                max_in_flight=total_num_le_acl_data_packets,
+                send=self.send_hci_packet,
+            )
+
+        if iso_data_packet_length and total_num_iso_data_packets:
+            self.iso_packet_queue = DataPacketQueue(
+                max_packet_size=iso_data_packet_length,
+                max_in_flight=total_num_iso_data_packets,
                 send=self.send_hci_packet,
             )
 
@@ -552,7 +691,7 @@ class Host(AbortableEventEmitter):
 
                 return response
             except Exception as error:
-                logger.warning(
+                logger.exception(
                     f'{color("!!! Exception while sending command:", "red")} {error}'
                 )
                 raise error
@@ -595,10 +734,77 @@ class Host(AbortableEventEmitter):
                 data=l2cap_pdu[offset : offset + data_total_length],
             )
             logger.debug(f'>>> ACL packet enqueue: (CID={cid}) {acl_packet}')
-            packet_queue.enqueue(acl_packet)
+            packet_queue.enqueue(acl_packet, connection_handle)
             pb_flag = 1
             offset += data_total_length
             bytes_remaining -= data_total_length
+
+    def get_data_packet_queue(self, connection_handle: int) -> DataPacketQueue | None:
+        if connection := self.connections.get(connection_handle):
+            return connection.acl_packet_queue
+
+        if iso_link := self.cis_links.get(connection_handle) or self.bis_links.get(
+            connection_handle
+        ):
+            return iso_link.packet_queue
+
+        return None
+
+    def send_iso_sdu(self, connection_handle: int, sdu: bytes) -> None:
+        if not (
+            iso_link := self.cis_links.get(connection_handle)
+            or self.bis_links.get(connection_handle)
+        ):
+            logger.warning(f"no ISO link for connection handle {connection_handle}")
+            return
+
+        if iso_link.packet_queue is None:
+            logger.warning("ISO link has no data packet queue")
+            return
+
+        bytes_remaining = len(sdu)
+        offset = 0
+        while bytes_remaining:
+            is_first_fragment = offset == 0
+            header_length = 4 if is_first_fragment else 0
+            assert iso_link.packet_queue.max_packet_size > header_length
+            fragment_length = min(
+                bytes_remaining, iso_link.packet_queue.max_packet_size - header_length
+            )
+            is_last_fragment = bytes_remaining == fragment_length
+            iso_sdu_fragment = sdu[offset : offset + fragment_length]
+            iso_link.packet_queue.enqueue(
+                (
+                    hci.HCI_IsoDataPacket(
+                        connection_handle=connection_handle,
+                        data_total_length=header_length + fragment_length,
+                        packet_sequence_number=iso_link.packet_sequence_number,
+                        pb_flag=0b10 if is_last_fragment else 0b00,
+                        packet_status_flag=0,
+                        iso_sdu_length=len(sdu),
+                        iso_sdu_fragment=iso_sdu_fragment,
+                    )
+                    if is_first_fragment
+                    else hci.HCI_IsoDataPacket(
+                        connection_handle=connection_handle,
+                        data_total_length=fragment_length,
+                        pb_flag=0b11 if is_last_fragment else 0b01,
+                        iso_sdu_fragment=iso_sdu_fragment,
+                    )
+                ),
+                connection_handle,
+            )
+
+            offset += fragment_length
+            bytes_remaining -= fragment_length
+
+        iso_link.packet_sequence_number = (iso_link.packet_sequence_number + 1) & 0xFFFF
+
+    def remove_big(self, big_handle: int) -> None:
+        if big := self.bigs.pop(big_handle, None):
+            for connection_handle in big:
+                if bis_link := self.bis_links.pop(connection_handle, None):
+                    bis_link.packet_queue.flush(bis_link.handle)
 
     def supports_command(self, op_code: int) -> bool:
         return (
@@ -727,16 +933,17 @@ class Host(AbortableEventEmitter):
     def on_hci_command_status_event(self, event):
         return self.on_command_processed(event)
 
-    def on_hci_number_of_completed_packets_event(self, event):
+    def on_hci_number_of_completed_packets_event(
+        self, event: hci.HCI_Number_Of_Completed_Packets_Event
+    ) -> None:
         for connection_handle, num_completed_packets in zip(
             event.connection_handles, event.num_completed_packets
         ):
-            if connection := self.connections.get(connection_handle):
-                connection.acl_packet_queue.on_packets_completed(num_completed_packets)
-            elif not (
-                self.cis_links.get(connection_handle)
-                or self.sco_links.get(connection_handle)
-            ):
+            if queue := self.get_data_packet_queue(connection_handle):
+                queue.on_packets_completed(num_completed_packets, connection_handle)
+                continue
+
+            if connection_handle not in self.sco_links:
                 logger.warning(
                     'received packet completion event for unknown handle '
                     f'0x{connection_handle:04X}'
@@ -767,7 +974,7 @@ class Host(AbortableEventEmitter):
                     self,
                     event.connection_handle,
                     event.peer_address,
-                    BT_LE_TRANSPORT,
+                    PhysicalTransport.LE,
                 )
                 self.connections[event.connection_handle] = connection
 
@@ -780,11 +987,11 @@ class Host(AbortableEventEmitter):
             self.emit(
                 'connection',
                 event.connection_handle,
-                BT_LE_TRANSPORT,
+                PhysicalTransport.LE,
                 event.peer_address,
                 getattr(event, 'local_resolvable_private_address', None),
                 getattr(event, 'peer_resolvable_private_address', None),
-                event.role,
+                hci.Role(event.role),
                 connection_parameters,
             )
         else:
@@ -792,7 +999,10 @@ class Host(AbortableEventEmitter):
 
             # Notify the listeners
             self.emit(
-                'connection_failure', BT_LE_TRANSPORT, event.peer_address, event.status
+                'connection_failure',
+                PhysicalTransport.LE,
+                event.peer_address,
+                event.status,
             )
 
     def on_hci_le_enhanced_connection_complete_event(self, event):
@@ -817,7 +1027,7 @@ class Host(AbortableEventEmitter):
                     self,
                     event.connection_handle,
                     event.bd_addr,
-                    BT_BR_EDR_TRANSPORT,
+                    PhysicalTransport.BR_EDR,
                 )
                 self.connections[event.connection_handle] = connection
 
@@ -825,7 +1035,7 @@ class Host(AbortableEventEmitter):
             self.emit(
                 'connection',
                 event.connection_handle,
-                BT_BR_EDR_TRANSPORT,
+                PhysicalTransport.BR_EDR,
                 event.bd_addr,
                 None,
                 None,
@@ -837,7 +1047,10 @@ class Host(AbortableEventEmitter):
 
             # Notify the client
             self.emit(
-                'connection_failure', BT_BR_EDR_TRANSPORT, event.bd_addr, event.status
+                'connection_failure',
+                PhysicalTransport.BR_EDR,
+                event.bd_addr,
+                event.status,
             )
 
     def on_hci_disconnection_complete_event(self, event):
@@ -854,11 +1067,7 @@ class Host(AbortableEventEmitter):
             return
 
         if event.status == hci.HCI_SUCCESS:
-            logger.debug(
-                f'### DISCONNECTION: [0x{handle:04X}] '
-                f'{connection.peer_address} '
-                f'reason={event.reason}'
-            )
+            logger.debug(f'### DISCONNECTION: {connection}, reason={event.reason}')
 
             # Notify the listeners
             self.emit('disconnection', handle, event.reason)
@@ -869,6 +1078,14 @@ class Host(AbortableEventEmitter):
                 or self.cis_links.pop(handle, 0)
                 or self.sco_links.pop(handle, 0)
             )
+
+            # Flush the data queues
+            if self.acl_packet_queue:
+                self.acl_packet_queue.flush(handle)
+            if self.le_acl_packet_queue:
+                self.le_acl_packet_queue.flush(handle)
+            if self.iso_packet_queue:
+                self.iso_packet_queue.flush(handle)
         else:
             logger.debug(f'### DISCONNECTION FAILED: {event.status}')
 
@@ -902,8 +1119,11 @@ class Host(AbortableEventEmitter):
 
         # Notify the client
         if event.status == hci.HCI_SUCCESS:
-            connection_phy = ConnectionPHY(event.tx_phy, event.rx_phy)
-            self.emit('connection_phy_update', connection.handle, connection_phy)
+            self.emit(
+                'connection_phy_update',
+                connection.handle,
+                ConnectionPHY(event.tx_phy, event.rx_phy),
+            )
         else:
             self.emit('connection_phy_update_failure', connection.handle, event.status)
 
@@ -953,12 +1173,94 @@ class Host(AbortableEventEmitter):
             event.cis_id,
         )
 
+    def on_hci_le_create_big_complete_event(self, event):
+        self.bigs[event.big_handle] = set(event.connection_handle)
+        if self.iso_packet_queue is None:
+            logger.warning("BIS established but ISO packets not supported")
+
+        for connection_handle in event.connection_handle:
+            self.bis_links[connection_handle] = IsoLink(
+                connection_handle, self.iso_packet_queue
+            )
+
+        self.emit(
+            'big_establishment',
+            event.status,
+            event.big_handle,
+            event.connection_handle,
+            event.big_sync_delay,
+            event.transport_latency_big,
+            event.phy,
+            event.nse,
+            event.bn,
+            event.pto,
+            event.irc,
+            event.max_pdu,
+            event.iso_interval,
+        )
+
+    def on_hci_le_big_sync_established_event(self, event):
+        self.bigs[event.big_handle] = set(event.connection_handle)
+        for connection_handle in event.connection_handle:
+            self.bis_links[connection_handle] = IsoLink(
+                connection_handle, self.iso_packet_queue
+            )
+
+        self.emit(
+            'big_sync_establishment',
+            event.status,
+            event.big_handle,
+            event.transport_latency_big,
+            event.nse,
+            event.bn,
+            event.pto,
+            event.irc,
+            event.max_pdu,
+            event.iso_interval,
+            event.connection_handle,
+        )
+
+    def on_hci_le_big_sync_lost_event(self, event):
+        self.remove_big(event.big_handle)
+        self.emit('big_sync_lost', event.big_handle, event.reason)
+
+    def on_hci_le_terminate_big_complete_event(self, event):
+        self.remove_big(event.big_handle)
+        self.emit('big_termination', event.reason, event.big_handle)
+
+    def on_hci_le_periodic_advertising_sync_transfer_received_event(self, event):
+        self.emit(
+            'periodic_advertising_sync_transfer',
+            event.status,
+            event.connection_handle,
+            event.sync_handle,
+            event.advertising_sid,
+            event.advertiser_address,
+            event.advertiser_phy,
+            event.periodic_advertising_interval,
+            event.advertiser_clock_accuracy,
+        )
+
+    def on_hci_le_periodic_advertising_sync_transfer_received_v2_event(self, event):
+        self.emit(
+            'periodic_advertising_sync_transfer',
+            event.status,
+            event.connection_handle,
+            event.sync_handle,
+            event.advertising_sid,
+            event.advertiser_address,
+            event.advertiser_phy,
+            event.periodic_advertising_interval,
+            event.advertiser_clock_accuracy,
+        )
+
     def on_hci_le_cis_established_event(self, event):
         # The remaining parameters are unused for now.
         if event.status == hci.HCI_SUCCESS:
-            self.cis_links[event.connection_handle] = CisLink(
-                handle=event.connection_handle,
-                peer_address=hci.Address.ANY,
+            if self.iso_packet_queue is None:
+                logger.warning("CIS established but ISO packets not supported")
+            self.cis_links[event.connection_handle] = IsoLink(
+                handle=event.connection_handle, packet_queue=self.iso_packet_queue
             )
             self.emit('cis_establishment', event.connection_handle)
         else:
@@ -995,7 +1297,8 @@ class Host(AbortableEventEmitter):
                 logger.debug('no long term key provider')
                 long_term_key = None
             else:
-                long_term_key = await self.abort_on(
+                long_term_key = await utils.cancel_on_event(
+                    self,
                     'flush',
                     # pylint: disable-next=not-callable
                     self.long_term_key_provider(
@@ -1028,7 +1331,7 @@ class Host(AbortableEventEmitter):
 
             self.sco_links[event.connection_handle] = ScoLink(
                 peer_address=event.bd_addr,
-                handle=event.connection_handle,
+                connection_handle=event.connection_handle,
             )
 
             # Notify the client
@@ -1053,7 +1356,7 @@ class Host(AbortableEventEmitter):
                 f'role change for {event.bd_addr}: '
                 f'{hci.HCI_Constant.role_name(event.new_role)}'
             )
-            self.emit('role_change', event.bd_addr, event.new_role)
+            self.emit('role_change', event.bd_addr, hci.Role(event.new_role))
         else:
             logger.debug(
                 f'role change for {event.bd_addr} failed: '
@@ -1089,6 +1392,21 @@ class Host(AbortableEventEmitter):
                 'connection_encryption_change',
                 event.connection_handle,
                 event.encryption_enabled,
+                0,
+            )
+        else:
+            self.emit(
+                'connection_encryption_failure', event.connection_handle, event.status
+            )
+
+    def on_hci_encryption_change_v2_event(self, event):
+        # Notify the client
+        if event.status == hci.HCI_SUCCESS:
+            self.emit(
+                'connection_encryption_change',
+                event.connection_handle,
+                event.encryption_enabled,
+                event.encryption_key_size,
             )
         else:
             self.emit(
@@ -1102,6 +1420,18 @@ class Host(AbortableEventEmitter):
         else:
             self.emit(
                 'connection_encryption_key_refresh_failure',
+                event.connection_handle,
+                event.status,
+            )
+
+    def on_hci_qos_setup_complete_event(self, event):
+        if event.status == hci.HCI_SUCCESS:
+            self.emit(
+                'connection_qos_setup', event.connection_handle, event.service_type
+            )
+        else:
+            self.emit(
+                'connection_qos_setup_failure',
                 event.connection_handle,
                 event.status,
             )
@@ -1141,7 +1471,8 @@ class Host(AbortableEventEmitter):
                 logger.debug('no link key provider')
                 link_key = None
             else:
-                link_key = await self.abort_on(
+                link_key = await utils.cancel_on_event(
+                    self,
                     'flush',
                     # pylint: disable-next=not-callable
                     self.link_key_provider(event.bd_addr),
@@ -1236,3 +1567,24 @@ class Host(AbortableEventEmitter):
                 event.connection_handle,
                 int.from_bytes(event.le_features, 'little'),
             )
+
+    def on_hci_le_cs_read_remote_supported_capabilities_complete_event(self, event):
+        self.emit('cs_remote_supported_capabilities', event)
+
+    def on_hci_le_cs_security_enable_complete_event(self, event):
+        self.emit('cs_security', event)
+
+    def on_hci_le_cs_config_complete_event(self, event):
+        self.emit('cs_config', event)
+
+    def on_hci_le_cs_procedure_enable_complete_event(self, event):
+        self.emit('cs_procedure', event)
+
+    def on_hci_le_cs_subevent_result_event(self, event):
+        self.emit('cs_subevent_result', event)
+
+    def on_hci_le_cs_subevent_result_continue_event(self, event):
+        self.emit('cs_subevent_result_continue', event)
+
+    def on_hci_vendor_event(self, event):
+        self.emit('vendor_event', event)

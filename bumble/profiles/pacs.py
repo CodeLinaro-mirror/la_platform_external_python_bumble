@@ -25,6 +25,7 @@ from typing import Optional, Sequence, Union
 from bumble.profiles.bap import AudioLocation, CodecSpecificCapabilities, ContextType
 from bumble.profiles import le_audio
 from bumble import gatt
+from bumble import gatt_adapters
 from bumble import gatt_client
 from bumble import hci
 
@@ -72,6 +73,19 @@ class PacRecord:
             metadata=metadata,
         )
 
+    @classmethod
+    def list_from_bytes(cls, data: bytes) -> list[PacRecord]:
+        """Parse a serialized list of records preceded by a one byte list length."""
+        record_count = data[0]
+        records = []
+        offset = 1
+        for _ in range(record_count):
+            record = PacRecord.from_bytes(data[offset:])
+            offset += len(bytes(record))
+            records.append(record)
+
+        return records
+
     def __bytes__(self) -> bytes:
         capabilities_bytes = bytes(self.codec_specific_capabilities)
         metadata_bytes = bytes(self.metadata)
@@ -90,12 +104,12 @@ class PacRecord:
 class PublishedAudioCapabilitiesService(gatt.TemplateService):
     UUID = gatt.GATT_PUBLISHED_AUDIO_CAPABILITIES_SERVICE
 
-    sink_pac: Optional[gatt.Characteristic]
-    sink_audio_locations: Optional[gatt.Characteristic]
-    source_pac: Optional[gatt.Characteristic]
-    source_audio_locations: Optional[gatt.Characteristic]
-    available_audio_contexts: gatt.Characteristic
-    supported_audio_contexts: gatt.Characteristic
+    sink_pac: Optional[gatt.Characteristic[bytes]]
+    sink_audio_locations: Optional[gatt.Characteristic[bytes]]
+    source_pac: Optional[gatt.Characteristic[bytes]]
+    source_audio_locations: Optional[gatt.Characteristic[bytes]]
+    available_audio_contexts: gatt.Characteristic[bytes]
+    supported_audio_contexts: gatt.Characteristic[bytes]
 
     def __init__(
         self,
@@ -172,39 +186,70 @@ class PublishedAudioCapabilitiesService(gatt.TemplateService):
 class PublishedAudioCapabilitiesServiceProxy(gatt_client.ProfileServiceProxy):
     SERVICE_CLASS = PublishedAudioCapabilitiesService
 
-    sink_pac: Optional[gatt_client.CharacteristicProxy] = None
-    sink_audio_locations: Optional[gatt_client.CharacteristicProxy] = None
-    source_pac: Optional[gatt_client.CharacteristicProxy] = None
-    source_audio_locations: Optional[gatt_client.CharacteristicProxy] = None
-    available_audio_contexts: gatt_client.CharacteristicProxy
-    supported_audio_contexts: gatt_client.CharacteristicProxy
+    sink_pac: Optional[gatt_client.CharacteristicProxy[list[PacRecord]]] = None
+    sink_audio_locations: Optional[gatt_client.CharacteristicProxy[AudioLocation]] = (
+        None
+    )
+    source_pac: Optional[gatt_client.CharacteristicProxy[list[PacRecord]]] = None
+    source_audio_locations: Optional[gatt_client.CharacteristicProxy[AudioLocation]] = (
+        None
+    )
+    available_audio_contexts: gatt_client.CharacteristicProxy[tuple[ContextType, ...]]
+    supported_audio_contexts: gatt_client.CharacteristicProxy[tuple[ContextType, ...]]
 
     def __init__(self, service_proxy: gatt_client.ServiceProxy):
         self.service_proxy = service_proxy
 
-        self.available_audio_contexts = service_proxy.get_characteristics_by_uuid(
-            gatt.GATT_AVAILABLE_AUDIO_CONTEXTS_CHARACTERISTIC
-        )[0]
-        self.supported_audio_contexts = service_proxy.get_characteristics_by_uuid(
-            gatt.GATT_SUPPORTED_AUDIO_CONTEXTS_CHARACTERISTIC
-        )[0]
+        self.available_audio_contexts = (
+            gatt_adapters.DelegatedCharacteristicProxyAdapter(
+                service_proxy.get_required_characteristic_by_uuid(
+                    gatt.GATT_AVAILABLE_AUDIO_CONTEXTS_CHARACTERISTIC
+                ),
+                decode=lambda x: tuple(map(ContextType, struct.unpack('<HH', x))),
+            )
+        )
+
+        self.supported_audio_contexts = (
+            gatt_adapters.DelegatedCharacteristicProxyAdapter(
+                service_proxy.get_required_characteristic_by_uuid(
+                    gatt.GATT_SUPPORTED_AUDIO_CONTEXTS_CHARACTERISTIC
+                ),
+                decode=lambda x: tuple(map(ContextType, struct.unpack('<HH', x))),
+            )
+        )
 
         if characteristics := service_proxy.get_characteristics_by_uuid(
             gatt.GATT_SINK_PAC_CHARACTERISTIC
         ):
-            self.sink_pac = characteristics[0]
+            self.sink_pac = gatt_adapters.DelegatedCharacteristicProxyAdapter(
+                characteristics[0],
+                decode=PacRecord.list_from_bytes,
+            )
 
         if characteristics := service_proxy.get_characteristics_by_uuid(
             gatt.GATT_SOURCE_PAC_CHARACTERISTIC
         ):
-            self.source_pac = characteristics[0]
+            self.source_pac = gatt_adapters.DelegatedCharacteristicProxyAdapter(
+                characteristics[0],
+                decode=PacRecord.list_from_bytes,
+            )
 
         if characteristics := service_proxy.get_characteristics_by_uuid(
             gatt.GATT_SINK_AUDIO_LOCATION_CHARACTERISTIC
         ):
-            self.sink_audio_locations = characteristics[0]
+            self.sink_audio_locations = (
+                gatt_adapters.DelegatedCharacteristicProxyAdapter(
+                    characteristics[0],
+                    decode=lambda x: AudioLocation(struct.unpack('<I', x)[0]),
+                )
+            )
 
         if characteristics := service_proxy.get_characteristics_by_uuid(
             gatt.GATT_SOURCE_AUDIO_LOCATION_CHARACTERISTIC
         ):
-            self.source_audio_locations = characteristics[0]
+            self.source_audio_locations = (
+                gatt_adapters.DelegatedCharacteristicProxyAdapter(
+                    characteristics[0],
+                    decode=lambda x: AudioLocation(struct.unpack('<I', x)[0]),
+                )
+            )

@@ -17,9 +17,12 @@ package com.github.google.bumble.btbench
 import android.Manifest
 import android.annotation.SuppressLint
 import android.bluetooth.BluetoothAdapter
+import android.bluetooth.BluetoothDevice
 import android.bluetooth.BluetoothManager
+import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
+import android.content.IntentFilter
 import android.content.pm.PackageManager
 import android.os.Build
 import android.os.Bundle
@@ -34,12 +37,15 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.selection.selectable
+import androidx.compose.foundation.selection.selectableGroup
 import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Button
 import androidx.compose.material3.Divider
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.RadioButton
 import androidx.compose.material3.Slider
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Switch
@@ -54,6 +60,7 @@ import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.platform.LocalSoftwareKeyboardController
+import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.input.KeyboardType
@@ -62,6 +69,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.core.content.ContextCompat
 import com.github.google.bumble.btbench.ui.theme.BTBenchTheme
+import java.io.IOException
 import java.util.logging.Logger
 
 private val Log = Logger.getLogger("bumble.main-activity")
@@ -69,6 +77,10 @@ private val Log = Logger.getLogger("bumble.main-activity")
 const val PEER_BLUETOOTH_ADDRESS_PREF_KEY = "peer_bluetooth_address"
 const val SENDER_PACKET_COUNT_PREF_KEY = "sender_packet_count"
 const val SENDER_PACKET_SIZE_PREF_KEY = "sender_packet_size"
+const val SENDER_PACKET_INTERVAL_PREF_KEY = "sender_packet_interval"
+const val SCENARIO_PREF_KEY = "scenario"
+const val MODE_PREF_KEY = "mode"
+const val CONNECTION_PRIORITY_PREF_KEY = "connection_priority"
 
 class MainActivity : ComponentActivity() {
     private val appViewModel = AppViewModel()
@@ -77,6 +89,47 @@ class MainActivity : ComponentActivity() {
         super.onCreate(savedInstanceState)
         appViewModel.loadPreferences(getPreferences(Context.MODE_PRIVATE))
         checkPermissions()
+        registerReceivers()
+    }
+
+    private fun registerReceivers() {
+        val pairingRequestIntentFilter = IntentFilter(BluetoothDevice.ACTION_PAIRING_REQUEST)
+        registerReceiver(object: BroadcastReceiver() {
+            @SuppressLint("MissingPermission")
+            override fun onReceive(context: Context, intent: Intent) {
+                Log.info("ACTION_PAIRING_REQUEST")
+                val extras = intent.extras
+                if (extras != null) {
+                    for (key in extras.keySet()) {
+                        Log.info("$key: ${extras.get(key)}")
+                    }
+                }
+                val device: BluetoothDevice? = intent.getParcelableExtra(BluetoothDevice.EXTRA_DEVICE)
+                if (device != null) {
+                    if (checkSelfPermission(Manifest.permission.BLUETOOTH_PRIVILEGED) == PackageManager.PERMISSION_GRANTED) {
+                        Log.info("confirming pairing")
+                        device.setPairingConfirmation(true)
+                    } else {
+                        Log.info("we don't have BLUETOOTH_PRIVILEGED, not confirming")
+                    }
+                }
+
+            }
+        }, pairingRequestIntentFilter)
+
+        val bondStateChangedIntentFilter = IntentFilter(BluetoothDevice.ACTION_BOND_STATE_CHANGED)
+        registerReceiver(object: BroadcastReceiver() {
+            @SuppressLint("MissingPermission")
+            override fun onReceive(context: Context, intent: Intent) {
+                Log.info("ACTION_BOND_STATE_CHANGED")
+                val extras = intent.extras
+                if (extras != null) {
+                    for (key in extras.keySet()) {
+                        Log.info("$key: ${extras.get(key)}")
+                    }
+                }
+            }
+        }, bondStateChangedIntentFilter)
     }
 
     private fun checkPermissions() {
@@ -137,12 +190,7 @@ class MainActivity : ComponentActivity() {
         initBluetooth()
         setContent {
             MainView(
-                appViewModel,
-                ::becomeDiscoverable,
-                ::runRfcommClient,
-                ::runRfcommServer,
-                ::runL2capClient,
-                ::runL2capServer,
+                appViewModel, ::becomeDiscoverable, ::runScenario
             )
         }
 
@@ -159,43 +207,78 @@ class MainActivity : ComponentActivity() {
         if (packetSize > 0) {
             appViewModel.senderPacketSize = packetSize
         }
+        val packetInterval = intent.getIntExtra("packet-interval", 0)
+        if (packetInterval > 0) {
+            appViewModel.senderPacketInterval = packetInterval
+        }
         appViewModel.updateSenderPacketSizeSlider()
+        intent.getStringExtra("scenario")?.let {
+            when (it) {
+                "send" -> appViewModel.scenario = SEND_SCENARIO
+                "receive" -> appViewModel.scenario = RECEIVE_SCENARIO
+                "ping" -> appViewModel.scenario = PING_SCENARIO
+                "pong" -> appViewModel.scenario = PONG_SCENARIO
+            }
+        }
+        intent.getStringExtra("mode")?.let {
+            when (it) {
+                "rfcomm-client" -> appViewModel.mode = RFCOMM_CLIENT_MODE
+                "rfcomm-server" -> appViewModel.mode = RFCOMM_SERVER_MODE
+                "l2cap-client" -> appViewModel.mode = L2CAP_CLIENT_MODE
+                "l2cap-server" -> appViewModel.mode = L2CAP_SERVER_MODE
+                "gatt-client" -> appViewModel.mode = GATT_CLIENT_MODE
+                "gatt-server" -> appViewModel.mode = GATT_SERVER_MODE
+            }
+        }
         intent.getStringExtra("autostart")?.let {
             when (it) {
-                "rfcomm-client" -> runRfcommClient()
-                "rfcomm-server" -> runRfcommServer()
-                "l2cap-client" -> runL2capClient()
-                "l2cap-server" -> runL2capServer()
+                "run-scenario" -> runScenario()
                 "scan-start" -> runScan(true)
                 "stop-start" -> runScan(false)
             }
         }
     }
 
-    private fun runRfcommClient() {
-        val rfcommClient = bluetoothAdapter?.let { RfcommClient(appViewModel, it) }
-        rfcommClient?.run()
-    }
+    private fun runScenario() {
+        if (bluetoothAdapter == null) {
+            throw IOException("bluetooth not enabled")
+        }
 
-    private fun runRfcommServer() {
-        val rfcommServer = bluetoothAdapter?.let { RfcommServer(appViewModel, it) }
-        rfcommServer?.run()
-    }
+        val runner = when (appViewModel.mode) {
+            RFCOMM_CLIENT_MODE -> RfcommClient(appViewModel, bluetoothAdapter!!, ::createIoClient)
+            RFCOMM_SERVER_MODE -> RfcommServer(appViewModel, bluetoothAdapter!!, ::createIoClient)
+            L2CAP_CLIENT_MODE -> L2capClient(
+                appViewModel, bluetoothAdapter!!, baseContext, ::createIoClient
+            )
 
-    private fun runL2capClient() {
-        val l2capClient = bluetoothAdapter?.let { L2capClient(appViewModel, it, baseContext) }
-        l2capClient?.run()
-    }
+            L2CAP_SERVER_MODE -> L2capServer(appViewModel, bluetoothAdapter!!, ::createIoClient)
+            GATT_CLIENT_MODE -> GattClient(
+                appViewModel, bluetoothAdapter!!, baseContext, ::createIoClient
+            )
+            GATT_SERVER_MODE -> GattServer(
+                appViewModel, bluetoothAdapter!!, baseContext, ::createIoClient
+            )
 
-    private fun runL2capServer() {
-        val l2capServer = bluetoothAdapter?.let { L2capServer(appViewModel, it) }
-        l2capServer?.run()
+            else -> throw IllegalStateException()
+        }
+        runner.run()
     }
 
     private fun runScan(startScan: Boolean) {
         val scan = bluetoothAdapter?.let { Scan(it) }
         scan?.run(startScan)
     }
+
+    private fun createIoClient(packetIo: PacketIO): IoClient {
+        return when (appViewModel.scenario) {
+            SEND_SCENARIO -> Sender(appViewModel, packetIo)
+            RECEIVE_SCENARIO -> Receiver(appViewModel, packetIo)
+            PING_SCENARIO -> Pinger(appViewModel, packetIo)
+            PONG_SCENARIO -> Ponger(appViewModel, packetIo)
+            else -> throw IllegalStateException()
+        }
+    }
+
 
     @SuppressLint("MissingPermission")
     fun becomeDiscoverable() {
@@ -210,10 +293,7 @@ class MainActivity : ComponentActivity() {
 fun MainView(
     appViewModel: AppViewModel,
     becomeDiscoverable: () -> Unit,
-    runRfcommClient: () -> Unit,
-    runRfcommServer: () -> Unit,
-    runL2capClient: () -> Unit,
-    runL2capServer: () -> Unit,
+    runScenario: () -> Unit,
 ) {
     BTBenchTheme {
         val scrollState = rememberScrollState()
@@ -239,7 +319,9 @@ fun MainView(
                         Text(text = "Peer Bluetooth Address")
                     },
                     value = appViewModel.peerBluetoothAddress,
-                    modifier = Modifier.fillMaxWidth().focusRequester(focusRequester),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .focusRequester(focusRequester),
                     keyboardOptions = KeyboardOptions.Default.copy(
                         keyboardType = KeyboardType.Ascii, imeAction = ImeAction.Done
                     ),
@@ -249,14 +331,18 @@ fun MainView(
                     keyboardActions = KeyboardActions(onDone = {
                         keyboardController?.hide()
                         focusManager.clearFocus()
-                    })
+                    }),
+                    enabled = (appViewModel.mode == RFCOMM_CLIENT_MODE || appViewModel.mode == L2CAP_CLIENT_MODE || appViewModel.mode == GATT_CLIENT_MODE)
                 )
                 Divider()
-                TextField(label = {
-                    Text(text = "L2CAP PSM")
-                },
+                TextField(
+                    label = {
+                        Text(text = "L2CAP PSM")
+                    },
                     value = appViewModel.l2capPsm.toString(),
-                    modifier = Modifier.fillMaxWidth().focusRequester(focusRequester),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .focusRequester(focusRequester),
                     keyboardOptions = KeyboardOptions.Default.copy(
                         keyboardType = KeyboardType.Number, imeAction = ImeAction.Done
                     ),
@@ -271,7 +357,8 @@ fun MainView(
                     keyboardActions = KeyboardActions(onDone = {
                         keyboardController?.hide()
                         focusManager.clearFocus()
-                    })
+                    }),
+                    enabled = (appViewModel.mode == L2CAP_CLIENT_MODE)
                 )
                 Divider()
                 Slider(
@@ -290,44 +377,158 @@ fun MainView(
                 )
                 Text(text = "Packet Size: " + appViewModel.senderPacketSize.toString())
                 Divider()
-                ActionButton(
-                    text = "Become Discoverable", onClick = becomeDiscoverable, true
+                TextField(
+                    label = {
+                        Text(text = "Packet Interval (ms)")
+                    },
+                    value = (if (appViewModel.senderPacketInterval != 0) appViewModel.senderPacketInterval else "").toString(),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .focusRequester(focusRequester),
+                    keyboardOptions = KeyboardOptions.Default.copy(
+                        keyboardType = KeyboardType.Number, imeAction = ImeAction.Done
+                    ),
+                    onValueChange = {
+                        if (it.isEmpty()) {
+                            appViewModel.updateSenderPacketInterval(0)
+                        } else {
+                            val interval = it.toIntOrNull()
+                            if (interval != null) {
+                                appViewModel.updateSenderPacketInterval(interval)
+                            }
+                        }
+                    },
+                    keyboardActions = KeyboardActions(onDone = {
+                        keyboardController?.hide()
+                        focusManager.clearFocus()
+                    }),
+                    enabled = (appViewModel.scenario == PING_SCENARIO || appViewModel.scenario == SEND_SCENARIO)
                 )
+                Divider()
                 Row(
                     horizontalArrangement = Arrangement.SpaceBetween,
                     verticalAlignment = Alignment.CenterVertically
                 ) {
                     Text(text = "2M PHY")
                     Spacer(modifier = Modifier.padding(start = 8.dp))
-                    Switch(
+                    Switch(enabled = (appViewModel.mode == L2CAP_CLIENT_MODE || appViewModel.mode == L2CAP_SERVER_MODE || appViewModel.mode == GATT_CLIENT_MODE || appViewModel.mode == GATT_SERVER_MODE),
                         checked = appViewModel.use2mPhy,
-                        onCheckedChange = { appViewModel.use2mPhy = it }
-                    )
-
+                        onCheckedChange = { appViewModel.use2mPhy = it })
+                    Column(Modifier.selectableGroup()) {
+                        listOf(
+                            "BALANCED", "LOW", "HIGH", "DCK"
+                        ).forEach { text ->
+                            Row(
+                                Modifier
+                                    .selectable(
+                                        selected = (text == appViewModel.connectionPriority),
+                                        onClick = { appViewModel.updateConnectionPriority(text) },
+                                        role = Role.RadioButton,
+                                    )
+                                    .padding(horizontal = 16.dp),
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                RadioButton(
+                                    selected = (text == appViewModel.connectionPriority),
+                                    onClick = null,
+                                    enabled = (appViewModel.mode == L2CAP_CLIENT_MODE || appViewModel.mode == L2CAP_SERVER_MODE || appViewModel.mode == GATT_CLIENT_MODE || appViewModel.mode == GATT_SERVER_MODE)
+                                )
+                                Text(
+                                    text = text,
+                                    style = MaterialTheme.typography.bodyLarge,
+                                    modifier = Modifier.padding(start = 16.dp)
+                                )
+                            }
+                        }
+                    }
+                }
+                Row {
+                    Column(Modifier.selectableGroup()) {
+                        listOf(
+                            RFCOMM_CLIENT_MODE,
+                            RFCOMM_SERVER_MODE,
+                            L2CAP_CLIENT_MODE,
+                            L2CAP_SERVER_MODE,
+                            GATT_CLIENT_MODE,
+                            GATT_SERVER_MODE
+                        ).forEach { text ->
+                            Row(
+                                Modifier
+                                    .selectable(
+                                        selected = (text == appViewModel.mode),
+                                        onClick = { appViewModel.updateMode(text) },
+                                        role = Role.RadioButton
+                                    )
+                                    .padding(horizontal = 16.dp),
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                RadioButton(
+                                    selected = (text == appViewModel.mode), onClick = null
+                                )
+                                Text(
+                                    text = text,
+                                    style = MaterialTheme.typography.bodyLarge,
+                                    modifier = Modifier.padding(start = 16.dp)
+                                )
+                            }
+                        }
+                    }
+                    Column(Modifier.selectableGroup()) {
+                        listOf(
+                            SEND_SCENARIO, RECEIVE_SCENARIO, PING_SCENARIO, PONG_SCENARIO
+                        ).forEach { text ->
+                            Row(
+                                Modifier
+                                    .selectable(
+                                        selected = (text == appViewModel.scenario),
+                                        onClick = { appViewModel.updateScenario(text) },
+                                        role = Role.RadioButton
+                                    )
+                                    .padding(horizontal = 16.dp),
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                RadioButton(
+                                    selected = (text == appViewModel.scenario), onClick = null
+                                )
+                                Text(
+                                    text = text,
+                                    style = MaterialTheme.typography.bodyLarge,
+                                    modifier = Modifier.padding(start = 16.dp)
+                                )
+                            }
+                        }
+                    }
                 }
                 Row {
                     ActionButton(
-                        text = "RFCOMM Client", onClick = runRfcommClient, !appViewModel.running
+                        text = "Start", onClick = runScenario, enabled = !appViewModel.running
                     )
                     ActionButton(
-                        text = "RFCOMM Server", onClick = runRfcommServer, !appViewModel.running
-                    )
-                }
-                Row {
-                    ActionButton(
-                        text = "L2CAP Client", onClick = runL2capClient, !appViewModel.running
+                        text = "Stop", onClick = appViewModel::abort, enabled = appViewModel.running
                     )
                     ActionButton(
-                        text = "L2CAP Server", onClick = runL2capServer, !appViewModel.running
+                        text = "Become Discoverable", onClick = becomeDiscoverable, true
                     )
                 }
                 Divider()
+                if (appViewModel.mtu != 0) {
+                    Text(
+                        text = "MTU: ${appViewModel.mtu}"
+                    )
+                }
+                if (appViewModel.rxPhy != 0) {
+                    Text(
+                        text = "PHY: tx=${appViewModel.txPhy}, rx=${appViewModel.rxPhy}"
+                    )
+                }
                 Text(
-                    text = if (appViewModel.mtu != 0) "MTU: ${appViewModel.mtu}" else ""
+                    text = "Status: ${appViewModel.status}"
                 )
-                Text(
-                    text = if (appViewModel.rxPhy != 0 || appViewModel.txPhy != 0) "PHY: tx=${appViewModel.txPhy}, rx=${appViewModel.rxPhy}" else ""
-                )
+                if (appViewModel.lastError.isNotEmpty()) {
+                    Text(
+                        text = "Last Error: ${appViewModel.lastError}"
+                    )
+                }
                 Text(
                     text = "Packets Sent: ${appViewModel.packetsSent}"
                 )
@@ -337,9 +538,8 @@ fun MainView(
                 Text(
                     text = "Throughput: ${appViewModel.throughput}"
                 )
-                Divider()
-                ActionButton(
-                    text = "Abort", onClick = appViewModel::abort, appViewModel.running
+                Text(
+                    text = "Stats: ${appViewModel.stats}"
                 )
             }
         }

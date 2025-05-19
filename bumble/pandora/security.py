@@ -15,21 +15,21 @@
 from __future__ import annotations
 import asyncio
 import contextlib
+from collections.abc import Awaitable
 import grpc
 import logging
 
-from . import utils
-from .config import Config
+from bumble.pandora import utils
+from bumble.pandora.config import Config
 from bumble import hci
 from bumble.core import (
-    BT_BR_EDR_TRANSPORT,
-    BT_LE_TRANSPORT,
-    BT_PERIPHERAL_ROLE,
+    PhysicalTransport,
     ProtocolError,
+    InvalidArgumentError,
 )
+import bumble.utils
 from bumble.device import Connection as BumbleConnection, Device
-from bumble.hci import HCI_Error
-from bumble.utils import EventWatcher
+from bumble.hci import HCI_Error, Role
 from bumble.pairing import PairingConfig, PairingDelegate as BasePairingDelegate
 from google.protobuf import any_pb2  # pytype: disable=pyi-error
 from google.protobuf import empty_pb2  # pytype: disable=pyi-error
@@ -95,7 +95,7 @@ class PairingDelegate(BasePairingDelegate):
         else:
             # In BR/EDR, connection may not be complete,
             # use address instead
-            assert self.connection.transport == BT_BR_EDR_TRANSPORT
+            assert self.connection.transport == PhysicalTransport.BR_EDR
             ev.address = bytes(reversed(bytes(self.connection.peer_address)))
 
         return ev
@@ -174,7 +174,7 @@ class PairingDelegate(BasePairingDelegate):
 
     async def display_number(self, number: int, digits: int = 6) -> None:
         if (
-            self.connection.transport == BT_BR_EDR_TRANSPORT
+            self.connection.transport == PhysicalTransport.BR_EDR
             and self.io_capability == BasePairingDelegate.DISPLAY_OUTPUT_ONLY
         ):
             return
@@ -188,35 +188,6 @@ class PairingDelegate(BasePairingDelegate):
 
         event = self.add_origin(PairingEvent(passkey_entry_notification=number))
         self.service.event_queue.put_nowait(event)
-
-
-BR_LEVEL_REACHED: Dict[SecurityLevel, Callable[[BumbleConnection], bool]] = {
-    LEVEL0: lambda connection: True,
-    LEVEL1: lambda connection: connection.encryption == 0 or connection.authenticated,
-    LEVEL2: lambda connection: connection.encryption != 0 and connection.authenticated,
-    LEVEL3: lambda connection: connection.encryption != 0
-    and connection.authenticated
-    and connection.link_key_type
-    in (
-        hci.HCI_AUTHENTICATED_COMBINATION_KEY_GENERATED_FROM_P_192_TYPE,
-        hci.HCI_AUTHENTICATED_COMBINATION_KEY_GENERATED_FROM_P_256_TYPE,
-    ),
-    LEVEL4: lambda connection: connection.encryption
-    == hci.HCI_Encryption_Change_Event.AES_CCM
-    and connection.authenticated
-    and connection.link_key_type
-    == hci.HCI_AUTHENTICATED_COMBINATION_KEY_GENERATED_FROM_P_256_TYPE,
-}
-
-LE_LEVEL_REACHED: Dict[LESecurityLevel, Callable[[BumbleConnection], bool]] = {
-    LE_LEVEL1: lambda connection: True,
-    LE_LEVEL2: lambda connection: connection.encryption != 0,
-    LE_LEVEL3: lambda connection: connection.encryption != 0
-    and connection.authenticated,
-    LE_LEVEL4: lambda connection: connection.encryption != 0
-    and connection.authenticated
-    and connection.sc,
-}
 
 
 class SecurityService(SecurityServicer):
@@ -249,6 +220,59 @@ class SecurityService(SecurityServicer):
             )
 
         self.device.pairing_config_factory = pairing_config_factory
+
+    async def _classic_level_reached(
+        self, level: SecurityLevel, connection: BumbleConnection
+    ) -> bool:
+        if level == LEVEL0:
+            return True
+        if level == LEVEL1:
+            return connection.encryption == 0 or connection.authenticated
+        if level == LEVEL2:
+            return connection.encryption != 0 and connection.authenticated
+
+        link_key_type: Optional[int] = None
+        if (keystore := connection.device.keystore) and (
+            keys := await keystore.get(str(connection.peer_address))
+        ):
+            link_key_type = keys.link_key_type
+        self.log.debug("link_key_type: %d", link_key_type)
+
+        if level == LEVEL3:
+            return (
+                connection.encryption != 0
+                and connection.authenticated
+                and link_key_type
+                in (
+                    hci.HCI_AUTHENTICATED_COMBINATION_KEY_GENERATED_FROM_P_192_TYPE,
+                    hci.HCI_AUTHENTICATED_COMBINATION_KEY_GENERATED_FROM_P_256_TYPE,
+                )
+            )
+        if level == LEVEL4:
+            return (
+                connection.encryption == hci.HCI_Encryption_Change_Event.AES_CCM
+                and connection.authenticated
+                and link_key_type
+                == hci.HCI_AUTHENTICATED_COMBINATION_KEY_GENERATED_FROM_P_256_TYPE
+            )
+        raise InvalidArgumentError(f"Unexpected level {level}")
+
+    def _le_level_reached(
+        self, level: LESecurityLevel, connection: BumbleConnection
+    ) -> bool:
+        if level == LE_LEVEL1:
+            return True
+        if level == LE_LEVEL2:
+            return connection.encryption != 0
+        if level == LE_LEVEL3:
+            return connection.encryption != 0 and connection.authenticated
+        if level == LE_LEVEL4:
+            return (
+                connection.encryption != 0
+                and connection.authenticated
+                and connection.sc
+            )
+        raise InvalidArgumentError(f"Unexpected level {level}")
 
     @utils.rpc
     async def OnPairing(
@@ -287,12 +311,12 @@ class SecurityService(SecurityServicer):
 
         oneof = request.WhichOneof('level')
         level = getattr(request, oneof)
-        assert {BT_BR_EDR_TRANSPORT: 'classic', BT_LE_TRANSPORT: 'le'}[
+        assert {PhysicalTransport.BR_EDR: 'classic', PhysicalTransport.LE: 'le'}[
             connection.transport
         ] == oneof
 
         # security level already reached
-        if self.reached_security_level(connection, level):
+        if await self.reached_security_level(connection, level):
             return SecureResponse(success=empty_pb2.Empty())
 
         # trigger pairing if needed
@@ -302,23 +326,23 @@ class SecurityService(SecurityServicer):
 
                 security_result = asyncio.get_running_loop().create_future()
 
-                with contextlib.closing(EventWatcher()) as watcher:
+                with contextlib.closing(bumble.utils.EventWatcher()) as watcher:
 
-                    @watcher.on(connection, 'pairing')
+                    @watcher.on(connection, connection.EVENT_PAIRING)
                     def on_pairing(*_: Any) -> None:
                         security_result.set_result('success')
 
-                    @watcher.on(connection, 'pairing_failure')
+                    @watcher.on(connection, connection.EVENT_PAIRING_FAILURE)
                     def on_pairing_failure(*_: Any) -> None:
                         security_result.set_result('pairing_failure')
 
-                    @watcher.on(connection, 'disconnection')
+                    @watcher.on(connection, connection.EVENT_DISCONNECTION)
                     def on_disconnection(*_: Any) -> None:
                         security_result.set_result('connection_died')
 
                     if (
-                        connection.transport == BT_LE_TRANSPORT
-                        and connection.role == BT_PERIPHERAL_ROLE
+                        connection.transport == PhysicalTransport.LE
+                        and connection.role == Role.PERIPHERAL
                     ):
                         connection.request_pairing()
                     else:
@@ -363,7 +387,7 @@ class SecurityService(SecurityServicer):
                 return SecureResponse(encryption_failure=empty_pb2.Empty())
 
         # security level has been reached ?
-        if self.reached_security_level(connection, level):
+        if await self.reached_security_level(connection, level):
             return SecureResponse(success=empty_pb2.Empty())
         return SecureResponse(not_reached=empty_pb2.Empty())
 
@@ -379,7 +403,7 @@ class SecurityService(SecurityServicer):
 
         assert request.level
         level = request.level
-        assert {BT_BR_EDR_TRANSPORT: 'classic', BT_LE_TRANSPORT: 'le'}[
+        assert {PhysicalTransport.BR_EDR: 'classic', PhysicalTransport.LE: 'le'}[
             connection.transport
         ] == request.level_variant()
 
@@ -390,13 +414,10 @@ class SecurityService(SecurityServicer):
         pair_task: Optional[asyncio.Future[None]] = None
 
         async def authenticate() -> None:
-            assert connection
             if (encryption := connection.encryption) != 0:
                 self.log.debug('Disable encryption...')
-                try:
+                with contextlib.suppress(Exception):
                     await connection.encrypt(enable=False)
-                except:
-                    pass
                 self.log.debug('Disable encryption: done')
 
             self.log.debug('Authenticate...')
@@ -415,19 +436,17 @@ class SecurityService(SecurityServicer):
 
             return wrapper
 
-        def try_set_success(*_: Any) -> None:
-            assert connection
-            if self.reached_security_level(connection, level):
+        async def try_set_success(*_: Any) -> None:
+            if await self.reached_security_level(connection, level):
                 self.log.debug('Wait for security: done')
                 wait_for_security.set_result('success')
 
-        def on_encryption_change(*_: Any) -> None:
-            assert connection
-            if self.reached_security_level(connection, level):
+        async def on_encryption_change(*_: Any) -> None:
+            if await self.reached_security_level(connection, level):
                 self.log.debug('Wait for security: done')
                 wait_for_security.set_result('success')
             elif (
-                connection.transport == BT_BR_EDR_TRANSPORT
+                connection.transport == PhysicalTransport.BR_EDR
                 and self.need_authentication(connection, level)
             ):
                 nonlocal authenticate_task
@@ -438,7 +457,7 @@ class SecurityService(SecurityServicer):
             if self.need_pairing(connection, level):
                 pair_task = asyncio.create_task(connection.pair())
 
-        listeners: Dict[str, Callable[..., None]] = {
+        listeners: Dict[str, Callable[..., Union[None, Awaitable[None]]]] = {
             'disconnection': set_failure('connection_died'),
             'pairing_failure': set_failure('pairing_failure'),
             'connection_authentication_failure': set_failure('authentication_failure'),
@@ -451,13 +470,13 @@ class SecurityService(SecurityServicer):
             'security_request': pair,
         }
 
-        with contextlib.closing(EventWatcher()) as watcher:
+        with contextlib.closing(bumble.utils.EventWatcher()) as watcher:
             # register event handlers
             for event, listener in listeners.items():
                 watcher.on(connection, event, listener)
 
             # security level already reached
-            if self.reached_security_level(connection, level):
+            if await self.reached_security_level(connection, level):
                 return WaitSecurityResponse(success=empty_pb2.Empty())
 
             self.log.debug('Wait for security...')
@@ -467,24 +486,20 @@ class SecurityService(SecurityServicer):
         # wait for `authenticate` to finish if any
         if authenticate_task is not None:
             self.log.debug('Wait for authentication...')
-            try:
+            with contextlib.suppress(Exception):
                 await authenticate_task  # type: ignore
-            except:
-                pass
             self.log.debug('Authenticated')
 
         # wait for `pair` to finish if any
         if pair_task is not None:
             self.log.debug('Wait for authentication...')
-            try:
+            with contextlib.suppress(Exception):
                 await pair_task  # type: ignore
-            except:
-                pass
             self.log.debug('paired')
 
         return WaitSecurityResponse(**kwargs)
 
-    def reached_security_level(
+    async def reached_security_level(
         self, connection: BumbleConnection, level: Union[SecurityLevel, LESecurityLevel]
     ) -> bool:
         self.log.debug(
@@ -494,23 +509,22 @@ class SecurityService(SecurityServicer):
                     'encryption': connection.encryption,
                     'authenticated': connection.authenticated,
                     'sc': connection.sc,
-                    'link_key_type': connection.link_key_type,
                 }
             )
         )
 
         if isinstance(level, LESecurityLevel):
-            return LE_LEVEL_REACHED[level](connection)
+            return self._le_level_reached(level, connection)
 
-        return BR_LEVEL_REACHED[level](connection)
+        return await self._classic_level_reached(level, connection)
 
     def need_pairing(self, connection: BumbleConnection, level: int) -> bool:
-        if connection.transport == BT_LE_TRANSPORT:
+        if connection.transport == PhysicalTransport.LE:
             return level >= LE_LEVEL3 and not connection.authenticated
         return False
 
     def need_authentication(self, connection: BumbleConnection, level: int) -> bool:
-        if connection.transport == BT_LE_TRANSPORT:
+        if connection.transport == PhysicalTransport.LE:
             return False
         if level == LEVEL2 and connection.encryption != 0:
             return not connection.authenticated
@@ -518,7 +532,7 @@ class SecurityService(SecurityServicer):
 
     def need_encryption(self, connection: BumbleConnection, level: int) -> bool:
         # TODO(abel): need to support MITM
-        if connection.transport == BT_LE_TRANSPORT:
+        if connection.transport == PhysicalTransport.LE:
             return level == LE_LEVEL2 and not connection.encryption
         return level >= LEVEL2 and not connection.encryption
 

@@ -17,21 +17,20 @@
 # -----------------------------------------------------------------------------
 # Imports
 # -----------------------------------------------------------------------------
+from __future__ import annotations
 import logging
 import struct
 
 from dataclasses import dataclass
 from typing import Optional
 
-from bumble import gatt
 from bumble.device import Connection
 from bumble.att import ATT_Error
 from bumble.gatt import (
+    Attribute,
     Characteristic,
-    DelegatedCharacteristicAdapter,
     TemplateService,
     CharacteristicValue,
-    PackedCharacteristicAdapter,
     GATT_AUDIO_INPUT_CONTROL_SERVICE,
     GATT_AUDIO_INPUT_STATE_CHARACTERISTIC,
     GATT_GAIN_SETTINGS_ATTRIBUTE_CHARACTERISTIC,
@@ -40,8 +39,16 @@ from bumble.gatt import (
     GATT_AUDIO_INPUT_CONTROL_POINT_CHARACTERISTIC,
     GATT_AUDIO_INPUT_DESCRIPTION_CHARACTERISTIC,
 )
+from bumble.gatt_adapters import (
+    CharacteristicProxy,
+    PackedCharacteristicProxyAdapter,
+    SerializableCharacteristicAdapter,
+    SerializableCharacteristicProxyAdapter,
+    UTF8CharacteristicAdapter,
+    UTF8CharacteristicProxyAdapter,
+)
 from bumble.gatt_client import ProfileServiceProxy, ServiceProxy
-from bumble.utils import OpenIntEnum
+from bumble import utils
 
 # -----------------------------------------------------------------------------
 # Logging
@@ -57,7 +64,7 @@ GAIN_SETTINGS_MIN_VALUE = 0
 GAIN_SETTINGS_MAX_VALUE = 255
 
 
-class ErrorCode(OpenIntEnum):
+class ErrorCode(utils.OpenIntEnum):
     '''
     Cf. 1.6 Application error codes
     '''
@@ -69,7 +76,7 @@ class ErrorCode(OpenIntEnum):
     GAIN_MODE_CHANGE_NOT_ALLOWED = 0x84
 
 
-class Mute(OpenIntEnum):
+class Mute(utils.OpenIntEnum):
     '''
     Cf. 2.2.1.2 Mute Field
     '''
@@ -79,7 +86,7 @@ class Mute(OpenIntEnum):
     DISABLED = 0x02
 
 
-class GainMode(OpenIntEnum):
+class GainMode(utils.OpenIntEnum):
     '''
     Cf. 2.2.1.3 Gain Mode
     '''
@@ -90,21 +97,21 @@ class GainMode(OpenIntEnum):
     AUTOMATIC = 0x03
 
 
-class AudioInputStatus(OpenIntEnum):
+class AudioInputStatus(utils.OpenIntEnum):
     '''
     Cf. 3.4 Audio Input Status
     '''
 
-    INATIVE = 0x00
+    INACTIVE = 0x00
     ACTIVE = 0x01
 
 
-class AudioInputControlPointOpCode(OpenIntEnum):
+class AudioInputControlPointOpCode(utils.OpenIntEnum):
     '''
     Cf. 3.5.1 Audio Input Control Point procedure requirements
     '''
 
-    SET_GAIN_SETTING = 0x00
+    SET_GAIN_SETTING = 0x01
     UNMUTE = 0x02
     MUTE = 0x03
     SET_MANUAL_GAIN_MODE = 0x04
@@ -122,7 +129,7 @@ class AudioInputState:
     mute: Mute = Mute.NOT_MUTED
     gain_mode: GainMode = GainMode.MANUAL
     change_counter: int = 0
-    attribute_value: Optional[CharacteristicValue] = None
+    attribute: Optional[Attribute] = None
 
     def __bytes__(self) -> bytes:
         return bytes(
@@ -149,13 +156,8 @@ class AudioInputState:
         self.change_counter = (self.change_counter + 1) % (CHANGE_COUNTER_MAX_VALUE + 1)
 
     async def notify_subscribers_via_connection(self, connection: Connection) -> None:
-        assert self.attribute_value is not None
-        await connection.device.notify_subscribers(
-            attribute=self.attribute_value, value=bytes(self)
-        )
-
-    def on_read(self, _connection: Optional[Connection]) -> bytes:
-        return bytes(self)
+        assert self.attribute is not None
+        await connection.device.notify_subscribers(attribute=self.attribute)
 
 
 @dataclass
@@ -173,7 +175,7 @@ class GainSettingsProperties:
         (gain_settings_unit, gain_settings_minimum, gain_settings_maximum) = (
             struct.unpack('BBB', data)
         )
-        GainSettingsProperties(
+        return GainSettingsProperties(
             gain_settings_unit, gain_settings_minimum, gain_settings_maximum
         )
 
@@ -186,9 +188,6 @@ class GainSettingsProperties:
             ]
         )
 
-    def on_read(self, _connection: Optional[Connection]) -> bytes:
-        return bytes(self)
-
 
 @dataclass
 class AudioInputControlPoint:
@@ -199,8 +198,7 @@ class AudioInputControlPoint:
     audio_input_state: AudioInputState
     gain_settings_properties: GainSettingsProperties
 
-    async def on_write(self, connection: Optional[Connection], value: bytes) -> None:
-        assert connection
+    async def on_write(self, connection: Connection, value: bytes) -> None:
 
         opcode = AudioInputControlPointOpCode(value[0])
 
@@ -239,7 +237,7 @@ class AudioInputControlPoint:
             or gain_settings_operand
             > self.gain_settings_properties.gain_settings_maximum
         ):
-            logger.error("gain_seetings value out of range")
+            logger.error("gain_settings value out of range")
             raise ATT_Error(ErrorCode.VALUE_OUT_OF_RANGE)
 
         if self.audio_input_state.gain_settings != gain_settings_operand:
@@ -319,30 +317,26 @@ class AudioInputDescription:
     '''
 
     audio_input_description: str = "Bluetooth"
-    attribute_value: Optional[CharacteristicValue] = None
+    attribute: Optional[Attribute] = None
 
-    @classmethod
-    def from_bytes(cls, data: bytes):
-        return cls(audio_input_description=data.decode('utf-8'))
+    def on_read(self, _connection: Connection) -> str:
+        return self.audio_input_description
 
-    def __bytes__(self) -> bytes:
-        return self.audio_input_description.encode('utf-8')
+    async def on_write(self, connection: Connection, value: str) -> None:
+        assert self.attribute
 
-    def on_read(self, _connection: Optional[Connection]) -> bytes:
-        return self.audio_input_description.encode('utf-8')
-
-    async def on_write(self, connection: Optional[Connection], value: bytes) -> None:
-        assert connection
-        assert self.attribute_value
-
-        self.audio_input_description = value.decode('utf-8')
-        await connection.device.notify_subscribers(
-            attribute=self.attribute_value, value=value
-        )
+        self.audio_input_description = value
+        await connection.device.notify_subscribers(attribute=self.attribute)
 
 
 class AICSService(TemplateService):
     UUID = GATT_AUDIO_INPUT_CONTROL_SERVICE
+
+    audio_input_state_characteristic: Characteristic[AudioInputState]
+    audio_input_type_characteristic: Characteristic[bytes]
+    audio_input_status_characteristic: Characteristic[bytes]
+    audio_input_control_point_characteristic: Characteristic[bytes]
+    gain_settings_properties_characteristic: Characteristic[GainSettingsProperties]
 
     def __init__(
         self,
@@ -375,26 +369,27 @@ class AICSService(TemplateService):
             self.audio_input_state, self.gain_settings_properties
         )
 
-        self.audio_input_state_characteristic = DelegatedCharacteristicAdapter(
+        self.audio_input_state_characteristic = SerializableCharacteristicAdapter(
             Characteristic(
                 uuid=GATT_AUDIO_INPUT_STATE_CHARACTERISTIC,
                 properties=Characteristic.Properties.READ
                 | Characteristic.Properties.NOTIFY,
                 permissions=Characteristic.Permissions.READ_REQUIRES_ENCRYPTION,
-                value=CharacteristicValue(read=self.audio_input_state.on_read),
+                value=self.audio_input_state,
             ),
-            encode=lambda value: bytes(value),
+            AudioInputState,
         )
-        self.audio_input_state.attribute_value = (
-            self.audio_input_state_characteristic.value
-        )
+        self.audio_input_state.attribute = self.audio_input_state_characteristic
 
-        self.gain_settings_properties_characteristic = DelegatedCharacteristicAdapter(
-            Characteristic(
-                uuid=GATT_GAIN_SETTINGS_ATTRIBUTE_CHARACTERISTIC,
-                properties=Characteristic.Properties.READ,
-                permissions=Characteristic.Permissions.READ_REQUIRES_ENCRYPTION,
-                value=CharacteristicValue(read=self.gain_settings_properties.on_read),
+        self.gain_settings_properties_characteristic = (
+            SerializableCharacteristicAdapter(
+                Characteristic(
+                    uuid=GATT_GAIN_SETTINGS_ATTRIBUTE_CHARACTERISTIC,
+                    properties=Characteristic.Properties.READ,
+                    permissions=Characteristic.Permissions.READ_REQUIRES_ENCRYPTION,
+                    value=self.gain_settings_properties,
+                ),
+                GainSettingsProperties,
             )
         )
 
@@ -402,7 +397,7 @@ class AICSService(TemplateService):
             uuid=GATT_AUDIO_INPUT_TYPE_CHARACTERISTIC,
             properties=Characteristic.Properties.READ,
             permissions=Characteristic.Permissions.READ_REQUIRES_ENCRYPTION,
-            value=audio_input_type,
+            value=bytes(audio_input_type, 'utf-8'),
         )
 
         self.audio_input_status_characteristic = Characteristic(
@@ -412,18 +407,14 @@ class AICSService(TemplateService):
             value=bytes([self.audio_input_status]),
         )
 
-        self.audio_input_control_point_characteristic = DelegatedCharacteristicAdapter(
-            Characteristic(
-                uuid=GATT_AUDIO_INPUT_CONTROL_POINT_CHARACTERISTIC,
-                properties=Characteristic.Properties.WRITE,
-                permissions=Characteristic.Permissions.WRITE_REQUIRES_ENCRYPTION,
-                value=CharacteristicValue(
-                    write=self.audio_input_control_point.on_write
-                ),
-            )
+        self.audio_input_control_point_characteristic = Characteristic(
+            uuid=GATT_AUDIO_INPUT_CONTROL_POINT_CHARACTERISTIC,
+            properties=Characteristic.Properties.WRITE,
+            permissions=Characteristic.Permissions.WRITE_REQUIRES_ENCRYPTION,
+            value=CharacteristicValue(write=self.audio_input_control_point.on_write),
         )
 
-        self.audio_input_description_characteristic = DelegatedCharacteristicAdapter(
+        self.audio_input_description_characteristic = UTF8CharacteristicAdapter(
             Characteristic(
                 uuid=GATT_AUDIO_INPUT_DESCRIPTION_CHARACTERISTIC,
                 properties=Characteristic.Properties.READ
@@ -437,8 +428,8 @@ class AICSService(TemplateService):
                 ),
             )
         )
-        self.audio_input_description.attribute_value = (
-            self.audio_input_control_point_characteristic.value
+        self.audio_input_description.attribute = (
+            self.audio_input_control_point_characteristic
         )
 
         super().__init__(
@@ -460,61 +451,43 @@ class AICSService(TemplateService):
 class AICSServiceProxy(ProfileServiceProxy):
     SERVICE_CLASS = AICSService
 
+    audio_input_state: CharacteristicProxy[AudioInputState]
+    gain_settings_properties: CharacteristicProxy[GainSettingsProperties]
+    audio_input_status: CharacteristicProxy[int]
+    audio_input_control_point: CharacteristicProxy[bytes]
+
     def __init__(self, service_proxy: ServiceProxy) -> None:
         self.service_proxy = service_proxy
 
-        if not (
-            characteristics := service_proxy.get_characteristics_by_uuid(
+        self.audio_input_state = SerializableCharacteristicProxyAdapter(
+            service_proxy.get_required_characteristic_by_uuid(
                 GATT_AUDIO_INPUT_STATE_CHARACTERISTIC
-            )
-        ):
-            raise gatt.InvalidServiceError("Audio Input State Characteristic not found")
-        self.audio_input_state = DelegatedCharacteristicAdapter(
-            characteristic=characteristics[0], decode=AudioInputState.from_bytes
+            ),
+            AudioInputState,
         )
 
-        if not (
-            characteristics := service_proxy.get_characteristics_by_uuid(
+        self.gain_settings_properties = SerializableCharacteristicProxyAdapter(
+            service_proxy.get_required_characteristic_by_uuid(
                 GATT_GAIN_SETTINGS_ATTRIBUTE_CHARACTERISTIC
-            )
-        ):
-            raise gatt.InvalidServiceError(
-                "Gain Settings Attribute Characteristic not found"
-            )
-        self.gain_settings_properties = PackedCharacteristicAdapter(
-            characteristics[0],
-            'BBB',
+            ),
+            GainSettingsProperties,
         )
 
-        if not (
-            characteristics := service_proxy.get_characteristics_by_uuid(
+        self.audio_input_status = PackedCharacteristicProxyAdapter(
+            service_proxy.get_required_characteristic_by_uuid(
                 GATT_AUDIO_INPUT_STATUS_CHARACTERISTIC
-            )
-        ):
-            raise gatt.InvalidServiceError(
-                "Audio Input Status Characteristic not found"
-            )
-        self.audio_input_status = PackedCharacteristicAdapter(
-            characteristics[0],
+            ),
             'B',
         )
 
-        if not (
-            characteristics := service_proxy.get_characteristics_by_uuid(
+        self.audio_input_control_point = (
+            service_proxy.get_required_characteristic_by_uuid(
                 GATT_AUDIO_INPUT_CONTROL_POINT_CHARACTERISTIC
             )
-        ):
-            raise gatt.InvalidServiceError(
-                "Audio Input Control Point Characteristic not found"
-            )
-        self.audio_input_control_point = characteristics[0]
+        )
 
-        if not (
-            characteristics := service_proxy.get_characteristics_by_uuid(
+        self.audio_input_description = UTF8CharacteristicProxyAdapter(
+            service_proxy.get_required_characteristic_by_uuid(
                 GATT_AUDIO_INPUT_DESCRIPTION_CHARACTERISTIC
             )
-        ):
-            raise gatt.InvalidServiceError(
-                "Audio Input Description Characteristic not found"
-            )
-        self.audio_input_description = characteristics[0]
+        )

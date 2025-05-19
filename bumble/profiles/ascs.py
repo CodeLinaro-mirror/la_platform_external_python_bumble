@@ -17,11 +17,13 @@
 # Imports
 # -----------------------------------------------------------------------------
 from __future__ import annotations
+
 import enum
 import logging
 import struct
 from typing import Any, Dict, List, Optional, Sequence, Tuple, Type, Union
 
+from bumble import utils
 from bumble import colors
 from bumble.profiles.bap import CodecSpecificConfiguration
 from bumble.profiles import le_audio
@@ -258,8 +260,8 @@ class AseReasonCode(enum.IntEnum):
 
 # -----------------------------------------------------------------------------
 class AudioRole(enum.IntEnum):
-    SINK = hci.HCI_LE_Setup_ISO_Data_Path_Command.Direction.CONTROLLER_TO_HOST
-    SOURCE = hci.HCI_LE_Setup_ISO_Data_Path_Command.Direction.HOST_TO_CONTROLLER
+    SINK = device.CisLink.Direction.CONTROLLER_TO_HOST
+    SOURCE = device.CisLink.Direction.HOST_TO_CONTROLLER
 
 
 # -----------------------------------------------------------------------------
@@ -273,6 +275,8 @@ class AseStateMachine(gatt.Characteristic):
         STREAMING        = 0x04
         DISABLING        = 0x05
         RELEASING        = 0x06
+
+    EVENT_STATE_CHANGE = "state_change"
 
     cis_link: Optional[device.CisLink] = None
 
@@ -300,7 +304,7 @@ class AseStateMachine(gatt.Characteristic):
     presentation_delay = 0
 
     # Additional parameters in ENABLING, STREAMING, DISABLING State
-    metadata = le_audio.Metadata()
+    metadata: le_audio.Metadata
 
     def __init__(
         self,
@@ -312,6 +316,7 @@ class AseStateMachine(gatt.Characteristic):
         self.ase_id = ase_id
         self._state = AseStateMachine.State.IDLE
         self.role = role
+        self.metadata = le_audio.Metadata()
 
         uuid = (
             gatt.GATT_SINK_ASE_CHARACTERISTIC
@@ -326,8 +331,12 @@ class AseStateMachine(gatt.Characteristic):
             value=gatt.CharacteristicValue(read=self.on_read),
         )
 
-        self.service.device.on('cis_request', self.on_cis_request)
-        self.service.device.on('cis_establishment', self.on_cis_establishment)
+        self.service.device.on(
+            self.service.device.EVENT_CIS_REQUEST, self.on_cis_request
+        )
+        self.service.device.on(
+            self.service.device.EVENT_CIS_ESTABLISHMENT, self.on_cis_establishment
+        )
 
     def on_cis_request(
         self,
@@ -341,8 +350,10 @@ class AseStateMachine(gatt.Characteristic):
             and cis_id == self.cis_id
             and self.state == self.State.ENABLING
         ):
-            acl_connection.abort_on(
-                'flush', self.service.device.accept_cis_request(cis_handle)
+            utils.cancel_on_event(
+                acl_connection,
+                'flush',
+                self.service.device.accept_cis_request(cis_handle),
             )
 
     def on_cis_establishment(self, cis_link: device.CisLink) -> None:
@@ -351,24 +362,17 @@ class AseStateMachine(gatt.Characteristic):
             and cis_link.cis_id == self.cis_id
             and self.state == self.State.ENABLING
         ):
-            cis_link.on('disconnection', self.on_cis_disconnection)
+            cis_link.on(cis_link.EVENT_DISCONNECTION, self.on_cis_disconnection)
 
             async def post_cis_established():
-                await self.service.device.send_command(
-                    hci.HCI_LE_Setup_ISO_Data_Path_Command(
-                        connection_handle=cis_link.handle,
-                        data_path_direction=self.role,
-                        data_path_id=0x00,  # Fixed HCI
-                        codec_id=hci.CodingFormat(hci.CodecID.TRANSPARENT),
-                        controller_delay=0,
-                        codec_configuration=b'',
-                    )
-                )
+                await cis_link.setup_data_path(direction=self.role)
                 if self.role == AudioRole.SINK:
                     self.state = self.State.STREAMING
                 await self.service.device.notify_subscribers(self, self.value)
 
-            cis_link.acl_connection.abort_on('flush', post_cis_established())
+            utils.cancel_on_event(
+                cis_link.acl_connection, 'flush', post_cis_established()
+            )
             self.cis_link = cis_link
 
     def on_cis_disconnection(self, _reason) -> None:
@@ -511,16 +515,12 @@ class AseStateMachine(gatt.Characteristic):
         self.state = self.State.RELEASING
 
         async def remove_cis_async():
-            await self.service.device.send_command(
-                hci.HCI_LE_Remove_ISO_Data_Path_Command(
-                    connection_handle=self.cis_link.handle,
-                    data_path_direction=self.role,
-                )
-            )
+            if self.cis_link:
+                await self.cis_link.remove_data_path(self.role)
             self.state = self.State.IDLE
             await self.service.device.notify_subscribers(self, self.value)
 
-        self.service.device.abort_on('flush', remove_cis_async())
+        utils.cancel_on_event(self.service.device, 'flush', remove_cis_async())
         return (AseResponseCode.SUCCESS, AseReasonCode.NONE)
 
     @property
@@ -531,7 +531,7 @@ class AseStateMachine(gatt.Characteristic):
     def state(self, new_state: State) -> None:
         logger.debug(f'{self} state change -> {colors.color(new_state.name, "cyan")}')
         self._state = new_state
-        self.emit('state_change')
+        self.emit(self.EVENT_STATE_CHANGE)
 
     @property
     def value(self):
@@ -590,7 +590,7 @@ class AseStateMachine(gatt.Characteristic):
         # Readonly. Do nothing in the setter.
         pass
 
-    def on_read(self, _: Optional[device.Connection]) -> bytes:
+    def on_read(self, _: device.Connection) -> bytes:
         return self.value
 
     def __str__(self) -> str:
@@ -605,7 +605,7 @@ class AudioStreamControlService(gatt.TemplateService):
     UUID = gatt.GATT_AUDIO_STREAM_CONTROL_SERVICE
 
     ase_state_machines: Dict[int, AseStateMachine]
-    ase_control_point: gatt.Characteristic
+    ase_control_point: gatt.Characteristic[bytes]
     _active_client: Optional[device.Connection] = None
 
     def __init__(
@@ -702,7 +702,8 @@ class AudioStreamControlService(gatt.TemplateService):
         control_point_notification = bytes(
             [operation.op_code, len(responses)]
         ) + b''.join(map(bytes, responses))
-        self.device.abort_on(
+        utils.cancel_on_event(
+            self.device,
             'flush',
             self.device.notify_subscribers(
                 self.ase_control_point, control_point_notification
@@ -711,7 +712,8 @@ class AudioStreamControlService(gatt.TemplateService):
 
         for ase_id, *_ in responses:
             if ase := self.ase_state_machines.get(ase_id):
-                self.device.abort_on(
+                utils.cancel_on_event(
+                    self.device,
                     'flush',
                     self.device.notify_subscribers(ase, ase.value),
                 )
@@ -721,9 +723,9 @@ class AudioStreamControlService(gatt.TemplateService):
 class AudioStreamControlServiceProxy(gatt_client.ProfileServiceProxy):
     SERVICE_CLASS = AudioStreamControlService
 
-    sink_ase: List[gatt_client.CharacteristicProxy]
-    source_ase: List[gatt_client.CharacteristicProxy]
-    ase_control_point: gatt_client.CharacteristicProxy
+    sink_ase: List[gatt_client.CharacteristicProxy[bytes]]
+    source_ase: List[gatt_client.CharacteristicProxy[bytes]]
+    ase_control_point: gatt_client.CharacteristicProxy[bytes]
 
     def __init__(self, service_proxy: gatt_client.ServiceProxy):
         self.service_proxy = service_proxy

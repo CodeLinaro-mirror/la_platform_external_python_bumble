@@ -28,8 +28,16 @@ import asyncio
 import logging
 from collections import defaultdict
 import struct
-from typing import List, Tuple, Optional, TypeVar, Type, Dict, Iterable, TYPE_CHECKING
-from pyee import EventEmitter
+from typing import (
+    Dict,
+    Iterable,
+    List,
+    Optional,
+    Tuple,
+    TypeVar,
+    Type,
+    TYPE_CHECKING,
+)
 
 from bumble.colors import color
 from bumble.core import UUID
@@ -74,7 +82,7 @@ from bumble.gatt import (
     Descriptor,
     Service,
 )
-from bumble.utils import AsyncRunner
+from bumble import utils
 
 if TYPE_CHECKING:
     from bumble.device import Device, Connection
@@ -94,13 +102,15 @@ GATT_SERVER_DEFAULT_MAX_MTU = 517
 # -----------------------------------------------------------------------------
 # GATT Server
 # -----------------------------------------------------------------------------
-class Server(EventEmitter):
+class Server(utils.EventEmitter):
     attributes: List[Attribute]
     services: List[Service]
     attributes_by_handle: Dict[int, Attribute]
     subscribers: Dict[int, Dict[int, bytes]]
     indication_semaphores: defaultdict[int, asyncio.Semaphore]
     pending_confirmations: defaultdict[int, Optional[asyncio.futures.Future]]
+
+    EVENT_CHARACTERISTIC_SUBSCRIPTION = "characteristic_subscription"
 
     def __init__(self, device: Device) -> None:
         super().__init__()
@@ -305,11 +315,8 @@ class Server(EventEmitter):
             self.add_service(service)
 
     def read_cccd(
-        self, connection: Optional[Connection], characteristic: Characteristic
+        self, connection: Connection, characteristic: Characteristic
     ) -> bytes:
-        if connection is None:
-            return bytes([0, 0])
-
         subscribers = self.subscribers.get(connection.handle)
         cccd = None
         if subscribers:
@@ -339,10 +346,13 @@ class Server(EventEmitter):
         notify_enabled = value[0] & 0x01 != 0
         indicate_enabled = value[0] & 0x02 != 0
         characteristic.emit(
-            'subscription', connection, notify_enabled, indicate_enabled
+            characteristic.EVENT_SUBSCRIPTION,
+            connection,
+            notify_enabled,
+            indicate_enabled,
         )
         self.emit(
-            'characteristic_subscription',
+            self.EVENT_CHARACTERISTIC_SUBSCRIPTION,
             connection,
             characteristic,
             notify_enabled,
@@ -353,7 +363,7 @@ class Server(EventEmitter):
         logger.debug(
             f'GATT Response from server: [0x{connection.handle:04X}] {response}'
         )
-        self.send_gatt_pdu(connection.handle, response.to_bytes())
+        self.send_gatt_pdu(connection.handle, bytes(response))
 
     async def notify_subscriber(
         self,
@@ -450,7 +460,7 @@ class Server(EventEmitter):
             )
 
             try:
-                self.send_gatt_pdu(connection.handle, indication.to_bytes())
+                self.send_gatt_pdu(connection.handle, bytes(indication))
                 await asyncio.wait_for(pending_confirmation, GATT_REQUEST_TIMEOUT)
             except asyncio.TimeoutError as error:
                 logger.warning(color('!!! GATT Indicate timeout', 'red'))
@@ -458,7 +468,7 @@ class Server(EventEmitter):
             finally:
                 self.pending_confirmations[connection.handle] = None
 
-    async def notify_or_indicate_subscribers(
+    async def _notify_or_indicate_subscribers(
         self,
         indicate: bool,
         attribute: Attribute,
@@ -492,7 +502,9 @@ class Server(EventEmitter):
         value: Optional[bytes] = None,
         force: bool = False,
     ):
-        return await self.notify_or_indicate_subscribers(False, attribute, value, force)
+        return await self._notify_or_indicate_subscribers(
+            False, attribute, value, force
+        )
 
     async def indicate_subscribers(
         self,
@@ -500,7 +512,7 @@ class Server(EventEmitter):
         value: Optional[bytes] = None,
         force: bool = False,
     ):
-        return await self.notify_or_indicate_subscribers(True, attribute, value, force)
+        return await self._notify_or_indicate_subscribers(True, attribute, value, force)
 
     def on_disconnection(self, connection: Connection) -> None:
         if connection.handle in self.subscribers:
@@ -651,7 +663,7 @@ class Server(EventEmitter):
 
         self.send_response(connection, response)
 
-    @AsyncRunner.run_in_task()
+    @utils.AsyncRunner.run_in_task()
     async def on_att_find_by_type_value_request(self, connection, request):
         '''
         See Bluetooth spec Vol 3, Part F - 3.4.3.3 Find By Type Value Request
@@ -704,7 +716,7 @@ class Server(EventEmitter):
 
         self.send_response(connection, response)
 
-    @AsyncRunner.run_in_task()
+    @utils.AsyncRunner.run_in_task()
     async def on_att_read_by_type_request(self, connection, request):
         '''
         See Bluetooth spec Vol 3, Part F - 3.4.4.1 Read By Type Request
@@ -770,7 +782,7 @@ class Server(EventEmitter):
 
         self.send_response(connection, response)
 
-    @AsyncRunner.run_in_task()
+    @utils.AsyncRunner.run_in_task()
     async def on_att_read_request(self, connection, request):
         '''
         See Bluetooth spec Vol 3, Part F - 3.4.4.3 Read Request
@@ -796,7 +808,7 @@ class Server(EventEmitter):
             )
         self.send_response(connection, response)
 
-    @AsyncRunner.run_in_task()
+    @utils.AsyncRunner.run_in_task()
     async def on_att_read_blob_request(self, connection, request):
         '''
         See Bluetooth spec Vol 3, Part F - 3.4.4.5 Read Blob Request
@@ -841,7 +853,7 @@ class Server(EventEmitter):
             )
         self.send_response(connection, response)
 
-    @AsyncRunner.run_in_task()
+    @utils.AsyncRunner.run_in_task()
     async def on_att_read_by_group_type_request(self, connection, request):
         '''
         See Bluetooth spec Vol 3, Part F - 3.4.4.9 Read by Group Type Request
@@ -909,7 +921,7 @@ class Server(EventEmitter):
 
         self.send_response(connection, response)
 
-    @AsyncRunner.run_in_task()
+    @utils.AsyncRunner.run_in_task()
     async def on_att_write_request(self, connection, request):
         '''
         See Bluetooth spec Vol 3, Part F - 3.4.5.1 Write Request
@@ -956,7 +968,7 @@ class Server(EventEmitter):
             response = ATT_Write_Response()
         self.send_response(connection, response)
 
-    @AsyncRunner.run_in_task()
+    @utils.AsyncRunner.run_in_task()
     async def on_att_write_command(self, connection, request):
         '''
         See Bluetooth spec Vol 3, Part F - 3.4.5.3 Write Command
