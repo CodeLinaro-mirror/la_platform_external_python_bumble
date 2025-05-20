@@ -102,6 +102,7 @@ class ContextType(enum.IntFlag):
 
     # fmt: off
     PROHIBITED       = 0x0000
+    UNSPECIFIED      = 0x0001
     CONVERSATIONAL   = 0x0002
     MEDIA            = 0x0004
     GAME             = 0x0008
@@ -264,7 +265,7 @@ class UnicastServerAdvertisingData:
                         core.AdvertisingData.SERVICE_DATA_16_BIT_UUID,
                         struct.pack(
                             '<2sBIB',
-                            gatt.GATT_AUDIO_STREAM_CONTROL_SERVICE.to_bytes(),
+                            bytes(gatt.GATT_AUDIO_STREAM_CONTROL_SERVICE),
                             self.announcement_type,
                             self.available_audio_contexts,
                             len(self.metadata),
@@ -350,6 +351,7 @@ class CodecSpecificCapabilities:
                 supported_max_codec_frames_per_sdu = value
 
         # It is expected here that if some fields are missing, an error should be raised.
+        # pylint: disable=possibly-used-before-assignment,used-before-assignment
         return CodecSpecificCapabilities(
             supported_sampling_frequencies=supported_sampling_frequencies,
             supported_frame_durations=supported_frame_durations,
@@ -396,18 +398,21 @@ class CodecSpecificConfiguration:
         OCTETS_PER_FRAME         = 0x04
         CODEC_FRAMES_PER_SDU     = 0x05
 
-    sampling_frequency: SamplingFrequency
-    frame_duration: FrameDuration
-    audio_channel_allocation: AudioLocation
-    octets_per_codec_frame: int
-    codec_frames_per_sdu: int
+    sampling_frequency: SamplingFrequency | None = None
+    frame_duration: FrameDuration | None = None
+    audio_channel_allocation: AudioLocation | None = None
+    octets_per_codec_frame: int | None = None
+    codec_frames_per_sdu: int | None = None
 
     @classmethod
     def from_bytes(cls, data: bytes) -> CodecSpecificConfiguration:
         offset = 0
-        # Allowed default values.
-        audio_channel_allocation = AudioLocation.NOT_ALLOWED
-        codec_frames_per_sdu = 1
+        sampling_frequency: SamplingFrequency | None = None
+        frame_duration: FrameDuration | None = None
+        audio_channel_allocation: AudioLocation | None = None
+        octets_per_codec_frame: int | None = None
+        codec_frames_per_sdu: int | None = None
+
         while offset < len(data):
             length, type = struct.unpack_from('BB', data, offset)
             offset += 2
@@ -425,7 +430,6 @@ class CodecSpecificConfiguration:
             elif type == CodecSpecificConfiguration.Type.CODEC_FRAMES_PER_SDU:
                 codec_frames_per_sdu = value
 
-        # It is expected here that if some fields are missing, an error should be raised.
         return CodecSpecificConfiguration(
             sampling_frequency=sampling_frequency,
             frame_duration=frame_duration,
@@ -435,23 +439,43 @@ class CodecSpecificConfiguration:
         )
 
     def __bytes__(self) -> bytes:
-        return struct.pack(
-            '<BBBBBBBBIBBHBBB',
-            2,
-            CodecSpecificConfiguration.Type.SAMPLING_FREQUENCY,
-            self.sampling_frequency,
-            2,
-            CodecSpecificConfiguration.Type.FRAME_DURATION,
-            self.frame_duration,
-            5,
-            CodecSpecificConfiguration.Type.AUDIO_CHANNEL_ALLOCATION,
-            self.audio_channel_allocation,
-            3,
-            CodecSpecificConfiguration.Type.OCTETS_PER_FRAME,
-            self.octets_per_codec_frame,
-            2,
-            CodecSpecificConfiguration.Type.CODEC_FRAMES_PER_SDU,
-            self.codec_frames_per_sdu,
+        return b''.join(
+            [
+                struct.pack(fmt, length, tag, value)
+                for fmt, length, tag, value in [
+                    (
+                        '<BBB',
+                        2,
+                        CodecSpecificConfiguration.Type.SAMPLING_FREQUENCY,
+                        self.sampling_frequency,
+                    ),
+                    (
+                        '<BBB',
+                        2,
+                        CodecSpecificConfiguration.Type.FRAME_DURATION,
+                        self.frame_duration,
+                    ),
+                    (
+                        '<BBI',
+                        5,
+                        CodecSpecificConfiguration.Type.AUDIO_CHANNEL_ALLOCATION,
+                        self.audio_channel_allocation,
+                    ),
+                    (
+                        '<BBH',
+                        3,
+                        CodecSpecificConfiguration.Type.OCTETS_PER_FRAME,
+                        self.octets_per_codec_frame,
+                    ),
+                    (
+                        '<BBB',
+                        2,
+                        CodecSpecificConfiguration.Type.CODEC_FRAMES_PER_SDU,
+                        self.codec_frames_per_sdu,
+                    ),
+                ]
+                if value is not None
+            ]
         )
 
 
@@ -463,6 +487,24 @@ class BroadcastAudioAnnouncement:
     def from_bytes(cls, data: bytes) -> Self:
         return cls(int.from_bytes(data[:3], 'little'))
 
+    def __bytes__(self) -> bytes:
+        return self.broadcast_id.to_bytes(3, 'little')
+
+    def get_advertising_data(self) -> bytes:
+        return bytes(
+            core.AdvertisingData(
+                [
+                    (
+                        core.AdvertisingData.SERVICE_DATA_16_BIT_UUID,
+                        (
+                            bytes(gatt.GATT_BROADCAST_AUDIO_ANNOUNCEMENT_SERVICE)
+                            + bytes(self)
+                        ),
+                    )
+                ]
+            )
+        )
+
 
 @dataclasses.dataclass
 class BasicAudioAnnouncement:
@@ -471,25 +513,36 @@ class BasicAudioAnnouncement:
         index: int
         codec_specific_configuration: CodecSpecificConfiguration
 
-    @dataclasses.dataclass
-    class CodecInfo:
-        coding_format: hci.CodecID
-        company_id: int
-        vendor_specific_codec_id: int
-
-        @classmethod
-        def from_bytes(cls, data: bytes) -> Self:
-            coding_format = hci.CodecID(data[0])
-            company_id = int.from_bytes(data[1:3], 'little')
-            vendor_specific_codec_id = int.from_bytes(data[3:5], 'little')
-            return cls(coding_format, company_id, vendor_specific_codec_id)
+        def __bytes__(self) -> bytes:
+            codec_specific_configuration_bytes = bytes(
+                self.codec_specific_configuration
+            )
+            return (
+                bytes([self.index, len(codec_specific_configuration_bytes)])
+                + codec_specific_configuration_bytes
+            )
 
     @dataclasses.dataclass
     class Subgroup:
-        codec_id: BasicAudioAnnouncement.CodecInfo
+        codec_id: hci.CodingFormat
         codec_specific_configuration: CodecSpecificConfiguration
         metadata: le_audio.Metadata
         bis: List[BasicAudioAnnouncement.BIS]
+
+        def __bytes__(self) -> bytes:
+            metadata_bytes = bytes(self.metadata)
+            codec_specific_configuration_bytes = bytes(
+                self.codec_specific_configuration
+            )
+            return (
+                bytes([len(self.bis)])
+                + bytes(self.codec_id)
+                + bytes([len(codec_specific_configuration_bytes)])
+                + codec_specific_configuration_bytes
+                + bytes([len(metadata_bytes)])
+                + metadata_bytes
+                + b''.join(map(bytes, self.bis))
+            )
 
     presentation_delay: int
     subgroups: List[BasicAudioAnnouncement.Subgroup]
@@ -502,7 +555,7 @@ class BasicAudioAnnouncement:
         for _ in range(data[3]):
             num_bis = data[offset]
             offset += 1
-            codec_id = cls.CodecInfo.from_bytes(data[offset : offset + 5])
+            codec_id = hci.CodingFormat.from_bytes(data[offset : offset + 5])
             offset += 5
             codec_specific_configuration_length = data[offset]
             offset += 1
@@ -546,3 +599,25 @@ class BasicAudioAnnouncement:
             )
 
         return cls(presentation_delay, subgroups)
+
+    def __bytes__(self) -> bytes:
+        return (
+            self.presentation_delay.to_bytes(3, 'little')
+            + bytes([len(self.subgroups)])
+            + b''.join(map(bytes, self.subgroups))
+        )
+
+    def get_advertising_data(self) -> bytes:
+        return bytes(
+            core.AdvertisingData(
+                [
+                    (
+                        core.AdvertisingData.SERVICE_DATA_16_BIT_UUID,
+                        (
+                            bytes(gatt.GATT_BASIC_AUDIO_ANNOUNCEMENT_SERVICE)
+                            + bytes(self)
+                        ),
+                    )
+                ]
+            )
+        )

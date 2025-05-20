@@ -41,26 +41,25 @@ from typing import (
     cast,
 )
 
-from pyee import EventEmitter
 
-from .colors import color
-from .hci import (
+from bumble.colors import color
+from bumble.hci import (
     Address,
+    Role,
     HCI_LE_Enable_Encryption_Command,
     HCI_Object,
     key_with_value,
 )
-from .core import (
-    BT_BR_EDR_TRANSPORT,
-    BT_CENTRAL_ROLE,
-    BT_LE_TRANSPORT,
+from bumble.core import (
+    PhysicalTransport,
     AdvertisingData,
     InvalidArgumentError,
     ProtocolError,
     name_or_number,
 )
-from .keys import PairingKeys
-from . import crypto
+from bumble.keys import PairingKeys
+from bumble import crypto
+from bumble import utils
 
 if TYPE_CHECKING:
     from bumble.device import Connection, Device
@@ -298,11 +297,8 @@ class SMP_Command:
     def init_from_bytes(self, pdu: bytes, offset: int) -> None:
         return HCI_Object.init_from_bytes(self, pdu, offset, self.fields)
 
-    def to_bytes(self):
-        return self.pdu
-
     def __bytes__(self):
-        return self.to_bytes()
+        return self.pdu
 
     def __str__(self):
         result = color(self.name, 'yellow')
@@ -698,6 +694,7 @@ class Session:
         self.ltk_ediv = 0
         self.ltk_rand = bytes(8)
         self.link_key: Optional[bytes] = None
+        self.maximum_encryption_key_size: int = 0
         self.initiator_key_distribution: int = 0
         self.responder_key_distribution: int = 0
         self.peer_random_value: Optional[bytes] = None
@@ -727,12 +724,13 @@ class Session:
         self.is_responder = not self.is_initiator
 
         # Listen for connection events
-        connection.on('disconnection', self.on_disconnection)
+        connection.on(connection.EVENT_DISCONNECTION, self.on_disconnection)
         connection.on(
-            'connection_encryption_change', self.on_connection_encryption_change
+            connection.EVENT_CONNECTION_ENCRYPTION_CHANGE,
+            self.on_connection_encryption_change,
         )
         connection.on(
-            'connection_encryption_key_refresh',
+            connection.EVENT_CONNECTION_ENCRYPTION_KEY_REFRESH,
             self.on_connection_encryption_key_refresh,
         )
 
@@ -743,6 +741,10 @@ class Session:
             )
         else:
             self.pairing_result = None
+
+        self.maximum_encryption_key_size = (
+            pairing_config.delegate.maximum_encryption_key_size
+        )
 
         # Key Distribution (default values before negotiation)
         self.initiator_key_distribution = (
@@ -855,7 +857,7 @@ class Session:
         initiator_io_capability: int,
         responder_io_capability: int,
     ) -> None:
-        if self.connection.transport == BT_BR_EDR_TRANSPORT:
+        if self.connection.transport == PhysicalTransport.BR_EDR:
             self.pairing_method = PairingMethod.CTKD_OVER_CLASSIC
             return
         if (not self.mitm) and (auth_req & SMP_MITM_AUTHREQ == 0):
@@ -898,7 +900,7 @@ class Session:
 
             self.send_pairing_failed(SMP_CONFIRM_VALUE_FAILED_ERROR)
 
-        self.connection.abort_on('disconnection', prompt())
+        utils.cancel_on_event(self.connection, 'disconnection', prompt())
 
     def prompt_user_for_numeric_comparison(
         self, code: int, next_steps: Callable[[], None]
@@ -917,7 +919,7 @@ class Session:
 
             self.send_pairing_failed(SMP_CONFIRM_VALUE_FAILED_ERROR)
 
-        self.connection.abort_on('disconnection', prompt())
+        utils.cancel_on_event(self.connection, 'disconnection', prompt())
 
     def prompt_user_for_number(self, next_steps: Callable[[int], None]) -> None:
         async def prompt() -> None:
@@ -934,7 +936,7 @@ class Session:
                 logger.warning(f'exception while prompting: {error}')
                 self.send_pairing_failed(SMP_PASSKEY_ENTRY_FAILED_ERROR)
 
-        self.connection.abort_on('disconnection', prompt())
+        utils.cancel_on_event(self.connection, 'disconnection', prompt())
 
     def display_passkey(self) -> None:
         # Generate random Passkey/PIN code
@@ -949,7 +951,8 @@ class Session:
             logger.debug(f'TK from passkey = {self.tk.hex()}')
 
         try:
-            self.connection.abort_on(
+            utils.cancel_on_event(
+                self.connection,
                 'disconnection',
                 self.pairing_config.delegate.display_number(self.passkey, digits=6),
             )
@@ -996,7 +999,7 @@ class Session:
             io_capability=self.io_capability,
             oob_data_flag=self.oob_data_flag,
             auth_req=self.auth_req,
-            maximum_encryption_key_size=16,
+            maximum_encryption_key_size=self.maximum_encryption_key_size,
             initiator_key_distribution=self.initiator_key_distribution,
             responder_key_distribution=self.responder_key_distribution,
         )
@@ -1008,7 +1011,7 @@ class Session:
             io_capability=self.io_capability,
             oob_data_flag=self.oob_data_flag,
             auth_req=self.auth_req,
-            maximum_encryption_key_size=16,
+            maximum_encryption_key_size=self.maximum_encryption_key_size,
             initiator_key_distribution=self.initiator_key_distribution,
             responder_key_distribution=self.responder_key_distribution,
         )
@@ -1048,7 +1051,7 @@ class Session:
                 )
 
             # Perform the next steps asynchronously in case we need to wait for input
-            self.connection.abort_on('disconnection', next_steps())
+            utils.cancel_on_event(self.connection, 'disconnection', next_steps())
         else:
             confirm_value = crypto.c1(
                 self.tk,
@@ -1168,11 +1171,11 @@ class Session:
         if self.is_initiator:
             # CTKD: Derive LTK from LinkKey
             if (
-                self.connection.transport == BT_BR_EDR_TRANSPORT
+                self.connection.transport == PhysicalTransport.BR_EDR
                 and self.initiator_key_distribution & SMP_ENC_KEY_DISTRIBUTION_FLAG
             ):
-                self.ctkd_task = self.connection.abort_on(
-                    'disconnection', self.get_link_key_and_derive_ltk()
+                self.ctkd_task = utils.cancel_on_event(
+                    self.connection, 'disconnection', self.get_link_key_and_derive_ltk()
                 )
             elif not self.sc:
                 # Distribute the LTK, EDIV and RAND
@@ -1207,11 +1210,11 @@ class Session:
         else:
             # CTKD: Derive LTK from LinkKey
             if (
-                self.connection.transport == BT_BR_EDR_TRANSPORT
+                self.connection.transport == PhysicalTransport.BR_EDR
                 and self.responder_key_distribution & SMP_ENC_KEY_DISTRIBUTION_FLAG
             ):
-                self.ctkd_task = self.connection.abort_on(
-                    'disconnection', self.get_link_key_and_derive_ltk()
+                self.ctkd_task = utils.cancel_on_event(
+                    self.connection, 'disconnection', self.get_link_key_and_derive_ltk()
                 )
             # Distribute the LTK, EDIV and RAND
             elif not self.sc:
@@ -1246,7 +1249,7 @@ class Session:
     def compute_peer_expected_distributions(self, key_distribution_flags: int) -> None:
         # Set our expectations for what to wait for in the key distribution phase
         self.peer_expected_distributions = []
-        if not self.sc and self.connection.transport == BT_LE_TRANSPORT:
+        if not self.sc and self.connection.transport == PhysicalTransport.LE:
             if key_distribution_flags & SMP_ENC_KEY_DISTRIBUTION_FLAG != 0:
                 self.peer_expected_distributions.append(
                     SMP_Encryption_Information_Command
@@ -1303,15 +1306,20 @@ class Session:
 
         # Wait for the pairing process to finish
         assert self.pairing_result
-        await self.connection.abort_on('disconnection', self.pairing_result)
+        await utils.cancel_on_event(
+            self.connection, 'disconnection', self.pairing_result
+        )
 
     def on_disconnection(self, _: int) -> None:
-        self.connection.remove_listener('disconnection', self.on_disconnection)
         self.connection.remove_listener(
-            'connection_encryption_change', self.on_connection_encryption_change
+            self.connection.EVENT_DISCONNECTION, self.on_disconnection
         )
         self.connection.remove_listener(
-            'connection_encryption_key_refresh',
+            self.connection.EVENT_CONNECTION_ENCRYPTION_CHANGE,
+            self.on_connection_encryption_change,
+        )
+        self.connection.remove_listener(
+            self.connection.EVENT_CONNECTION_ENCRYPTION_KEY_REFRESH,
             self.on_connection_encryption_key_refresh,
         )
         self.manager.on_session_end(self)
@@ -1321,10 +1329,10 @@ class Session:
         if self.is_initiator:
             self.distribute_keys()
 
-        self.connection.abort_on('disconnection', self.on_pairing())
+        utils.cancel_on_event(self.connection, 'disconnection', self.on_pairing())
 
     def on_connection_encryption_change(self) -> None:
-        if self.connection.is_encrypted:
+        if self.connection.is_encrypted and not self.completed:
             if self.is_responder:
                 # The responder distributes its keys first, the initiator later
                 self.distribute_keys()
@@ -1363,7 +1371,7 @@ class Session:
         keys = PairingKeys()
         keys.address_type = peer_address.address_type
         authenticated = self.pairing_method != PairingMethod.JUST_WORKS
-        if self.sc or self.connection.transport == BT_BR_EDR_TRANSPORT:
+        if self.sc or self.connection.transport == PhysicalTransport.BR_EDR:
             keys.ltk = PairingKeys.Key(value=self.ltk, authenticated=authenticated)
         else:
             our_ltk_key = PairingKeys.Key(
@@ -1372,8 +1380,10 @@ class Session:
                 ediv=self.ltk_ediv,
                 rand=self.ltk_rand,
             )
+            if not self.peer_ltk:
+                logger.error("peer_ltk is None")
             peer_ltk_key = PairingKeys.Key(
-                value=self.peer_ltk,
+                value=self.peer_ltk or b'',
                 authenticated=authenticated,
                 ediv=self.peer_ediv,
                 rand=self.peer_rand,
@@ -1430,8 +1440,10 @@ class Session:
     def on_smp_pairing_request_command(
         self, command: SMP_Pairing_Request_Command
     ) -> None:
-        self.connection.abort_on(
-            'disconnection', self.on_smp_pairing_request_command_async(command)
+        utils.cancel_on_event(
+            self.connection,
+            'disconnection',
+            self.on_smp_pairing_request_command_async(command),
         )
 
     async def on_smp_pairing_request_command_async(
@@ -1504,7 +1516,7 @@ class Session:
         # CTKD over BR/EDR should happen after the connection has been encrypted,
         # so when receiving pairing requests, responder should start distributing keys
         if (
-            self.connection.transport == BT_BR_EDR_TRANSPORT
+            self.connection.transport == PhysicalTransport.BR_EDR
             and self.connection.is_encrypted
             and self.is_responder
             and accepted
@@ -1839,7 +1851,7 @@ class Session:
         if self.is_initiator:
             if self.pairing_method == PairingMethod.OOB:
                 self.send_pairing_random_command()
-            else:
+            elif self.pairing_method == PairingMethod.PASSKEY:
                 self.send_pairing_confirm_command()
         else:
             if self.pairing_method == PairingMethod.PASSKEY:
@@ -1876,7 +1888,7 @@ class Session:
                     self.wait_before_continuing = None
                     self.send_pairing_dhkey_check_command()
 
-                self.connection.abort_on('disconnection', next_steps())
+                utils.cancel_on_event(self.connection, 'disconnection', next_steps())
             else:
                 self.send_pairing_dhkey_check_command()
         else:
@@ -1920,7 +1932,7 @@ class Session:
 
 
 # -----------------------------------------------------------------------------
-class Manager(EventEmitter):
+class Manager(utils.EventEmitter):
     '''
     Implements the Initiator and Responder roles of the Security Manager Protocol
     '''
@@ -1948,13 +1960,15 @@ class Manager(EventEmitter):
             f'>>> Sending SMP Command on connection [0x{connection.handle:04X}] '
             f'{connection.peer_address}: {command}'
         )
-        cid = SMP_BR_CID if connection.transport == BT_BR_EDR_TRANSPORT else SMP_CID
-        connection.send_l2cap_pdu(cid, command.to_bytes())
+        cid = (
+            SMP_BR_CID if connection.transport == PhysicalTransport.BR_EDR else SMP_CID
+        )
+        connection.send_l2cap_pdu(cid, bytes(command))
 
     def on_smp_security_request_command(
         self, connection: Connection, request: SMP_Security_Request_Command
     ) -> None:
-        connection.emit('security_request', request.auth_req)
+        connection.emit(connection.EVENT_SECURITY_REQUEST, request.auth_req)
 
     def on_smp_pdu(self, connection: Connection, pdu: bytes) -> None:
         # Parse the L2CAP payload into an SMP Command object
@@ -1973,7 +1987,7 @@ class Manager(EventEmitter):
 
         # Look for a session with this connection, and create one if none exists
         if not (session := self.sessions.get(connection.handle)):
-            if connection.role == BT_CENTRAL_ROLE:
+            if connection.role == Role.CENTRAL:
                 logger.warning('Remote starts pairing as Peripheral!')
             pairing_config = self.pairing_config_factory(connection)
             session = self.session_proxy(
@@ -1993,7 +2007,7 @@ class Manager(EventEmitter):
 
     async def pair(self, connection: Connection) -> None:
         # TODO: check if there's already a session for this connection
-        if connection.role != BT_CENTRAL_ROLE:
+        if connection.role != Role.CENTRAL:
             logger.warning('Start pairing as Peripheral!')
         pairing_config = self.pairing_config_factory(connection)
         session = self.session_proxy(
