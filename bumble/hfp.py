@@ -24,7 +24,6 @@ import asyncio
 import dataclasses
 import enum
 import traceback
-import pyee
 import re
 from typing import (
     Dict,
@@ -45,6 +44,7 @@ from bumble import at
 from bumble import device
 from bumble import rfcomm
 from bumble import sdp
+from bumble import utils
 from bumble.colors import color
 from bumble.core import (
     ProtocolError,
@@ -141,7 +141,7 @@ class HfFeature(enum.IntFlag):
     """
     HF supported features (AT+BRSF=) (normative).
 
-    Hands-Free Profile v1.8, 4.34.2, AT Capabilities Re-Used from GSM 07.07 and 3GPP 27.007.
+    Hands-Free Profile v1.9, 4.34.2, AT Capabilities Re-Used from GSM 07.07 and 3GPP 27.007.
     """
 
     EC_NR = 0x001  # Echo Cancel & Noise reduction
@@ -155,14 +155,14 @@ class HfFeature(enum.IntFlag):
     HF_INDICATORS = 0x100
     ESCO_S4_SETTINGS_SUPPORTED = 0x200
     ENHANCED_VOICE_RECOGNITION_STATUS = 0x400
-    VOICE_RECOGNITION_TEST = 0x800
+    VOICE_RECOGNITION_TEXT = 0x800
 
 
 class AgFeature(enum.IntFlag):
     """
     AG supported features (+BRSF:) (normative).
 
-    Hands-Free Profile v1.8, 4.34.2, AT Capabilities Re-Used from GSM 07.07 and 3GPP 27.007.
+    Hands-Free Profile v1.9, 4.34.2, AT Capabilities Re-Used from GSM 07.07 and 3GPP 27.007.
     """
 
     THREE_WAY_CALLING = 0x001
@@ -178,7 +178,7 @@ class AgFeature(enum.IntFlag):
     HF_INDICATORS = 0x400
     ESCO_S4_SETTINGS_SUPPORTED = 0x800
     ENHANCED_VOICE_RECOGNITION_STATUS = 0x1000
-    VOICE_RECOGNITION_TEST = 0x2000
+    VOICE_RECOGNITION_TEXT = 0x2000
 
 
 class AudioCodec(enum.IntEnum):
@@ -690,7 +690,7 @@ class HfIndicatorState:
     current_status: int = 0
 
 
-class HfProtocol(pyee.EventEmitter):
+class HfProtocol(utils.EventEmitter):
     """
     Implementation for the Hands-Free side of the Hands-Free profile.
 
@@ -719,6 +719,14 @@ class HfProtocol(pyee.EventEmitter):
             Args:
                 vrec: VoiceRecognitionState
     """
+
+    EVENT_CODEC_NEGOTIATION = "codec_negotiation"
+    EVENT_AG_INDICATOR = "ag_indicator"
+    EVENT_SPEAKER_VOLUME = "speaker_volume"
+    EVENT_MICROPHONE_VOLUME = "microphone_volume"
+    EVENT_RING = "ring"
+    EVENT_CLI_NOTIFICATION = "cli_notification"
+    EVENT_VOICE_RECOGNITION = "voice_recognition"
 
     class HfLoopTermination(HfpProtocolError):
         """Termination signal for run() loop."""
@@ -777,7 +785,8 @@ class HfProtocol(pyee.EventEmitter):
         self.dlc.sink = self._read_at
         # Stop the run() loop when L2CAP is closed.
         self.dlc.multiplexer.l2cap_channel.on(
-            'close', lambda: self.unsolicited_queue.put_nowait(None)
+            self.dlc.multiplexer.l2cap_channel.EVENT_CLOSE,
+            lambda: self.unsolicited_queue.put_nowait(None),
         )
 
     def supports_hf_feature(self, feature: HfFeature) -> bool:
@@ -795,29 +804,32 @@ class HfProtocol(pyee.EventEmitter):
         # Append to the read buffer.
         self.read_buffer.extend(data)
 
-        # Locate header and trailer.
-        header = self.read_buffer.find(b'\r\n')
-        trailer = self.read_buffer.find(b'\r\n', header + 2)
-        if header == -1 or trailer == -1:
-            return
+        while self.read_buffer:
+            # Locate header and trailer.
+            header = self.read_buffer.find(b'\r\n')
+            trailer = self.read_buffer.find(b'\r\n', header + 2)
+            if header == -1 or trailer == -1:
+                return
 
-        # Isolate the AT response code and parameters.
-        raw_response = self.read_buffer[header + 2 : trailer]
-        response = AtResponse.parse_from(raw_response)
-        logger.debug(f"<<< {raw_response.decode()}")
+            # Isolate the AT response code and parameters.
+            raw_response = self.read_buffer[header + 2 : trailer]
+            response = AtResponse.parse_from(raw_response)
+            logger.debug(f"<<< {raw_response.decode()}")
 
-        # Consume the response bytes.
-        self.read_buffer = self.read_buffer[trailer + 2 :]
+            # Consume the response bytes.
+            self.read_buffer = self.read_buffer[trailer + 2 :]
 
-        # Forward the received code to the correct queue.
-        if self.command_lock.locked() and (
-            response.code in STATUS_CODES or response.code in RESPONSE_CODES
-        ):
-            self.response_queue.put_nowait(response)
-        elif response.code in UNSOLICITED_CODES:
-            self.unsolicited_queue.put_nowait(response)
-        else:
-            logger.warning(f"dropping unexpected response with code '{response.code}'")
+            # Forward the received code to the correct queue.
+            if self.command_lock.locked() and (
+                response.code in STATUS_CODES or response.code in RESPONSE_CODES
+            ):
+                self.response_queue.put_nowait(response)
+            elif response.code in UNSOLICITED_CODES:
+                self.unsolicited_queue.put_nowait(response)
+            else:
+                logger.warning(
+                    f"dropping unexpected response with code '{response.code}'"
+                )
 
     async def execute_command(
         self,
@@ -1031,7 +1043,7 @@ class HfProtocol(pyee.EventEmitter):
         # ID. The HF shall be ready to accept the synchronous connection
         # establishment as soon as it has sent the AT commands AT+BCS=<Codec ID>.
         self.active_codec = AudioCodec(codec_id)
-        self.emit('codec_negotiation', self.active_codec)
+        self.emit(self.EVENT_CODEC_NEGOTIATION, self.active_codec)
 
         logger.info("codec connection setup completed")
 
@@ -1092,7 +1104,7 @@ class HfProtocol(pyee.EventEmitter):
         # CIEV is in 1-index, while ag_indicators is in 0-index.
         ag_indicator = self.ag_indicators[index - 1]
         ag_indicator.current_status = value
-        self.emit('ag_indicator', ag_indicator)
+        self.emit(self.EVENT_AG_INDICATOR, ag_indicator)
         logger.info(f"AG indicator updated: {ag_indicator.indicator}, {value}")
 
     async def handle_unsolicited(self):
@@ -1107,19 +1119,21 @@ class HfProtocol(pyee.EventEmitter):
                 int(result.parameters[0]), int(result.parameters[1])
             )
         elif result.code == "+VGS":
-            self.emit('speaker_volume', int(result.parameters[0]))
+            self.emit(self.EVENT_SPEAKER_VOLUME, int(result.parameters[0]))
         elif result.code == "+VGM":
-            self.emit('microphone_volume', int(result.parameters[0]))
+            self.emit(self.EVENT_MICROPHONE_VOLUME, int(result.parameters[0]))
         elif result.code == "RING":
-            self.emit('ring')
+            self.emit(self.EVENT_RING)
         elif result.code == "+CLIP":
             self.emit(
-                'cli_notification', CallLineIdentification.parse_from(result.parameters)
+                self.EVENT_CLI_NOTIFICATION,
+                CallLineIdentification.parse_from(result.parameters),
             )
         elif result.code == "+BVRA":
             # TODO: Support Enhanced Voice Recognition.
             self.emit(
-                'voice_recognition', VoiceRecognitionState(int(result.parameters[0]))
+                self.EVENT_VOICE_RECOGNITION,
+                VoiceRecognitionState(int(result.parameters[0])),
             )
         else:
             logging.info(f"unhandled unsolicited response {result.code}")
@@ -1143,7 +1157,7 @@ class HfProtocol(pyee.EventEmitter):
             logger.error(traceback.format_exc())
 
 
-class AgProtocol(pyee.EventEmitter):
+class AgProtocol(utils.EventEmitter):
     """
     Implementation for the Audio-Gateway side of the Hands-Free profile.
 
@@ -1175,6 +1189,19 @@ class AgProtocol(pyee.EventEmitter):
             Args:
                 volume: Int
     """
+
+    EVENT_SLC_COMPLETE = "slc_complete"
+    EVENT_SUPPORTED_AUDIO_CODECS = "supported_audio_codecs"
+    EVENT_CODEC_NEGOTIATION = "codec_negotiation"
+    EVENT_VOICE_RECOGNITION = "voice_recognition"
+    EVENT_CALL_HOLD = "call_hold"
+    EVENT_HF_INDICATOR = "hf_indicator"
+    EVENT_CODEC_CONNECTION_REQUEST = "codec_connection_request"
+    EVENT_ANSWER = "answer"
+    EVENT_DIAL = "dial"
+    EVENT_HANG_UP = "hang_up"
+    EVENT_SPEAKER_VOLUME = "speaker_volume"
+    EVENT_MICROPHONE_VOLUME = "microphone_volume"
 
     supported_hf_features: int
     supported_hf_indicators: Set[HfIndicator]
@@ -1244,31 +1271,32 @@ class AgProtocol(pyee.EventEmitter):
         # Append to the read buffer.
         self.read_buffer.extend(data)
 
-        # Locate the trailer.
-        trailer = self.read_buffer.find(b'\r')
-        if trailer == -1:
-            return
+        while self.read_buffer:
+            # Locate the trailer.
+            trailer = self.read_buffer.find(b'\r')
+            if trailer == -1:
+                return
 
-        # Isolate the AT response code and parameters.
-        raw_command = self.read_buffer[:trailer]
-        command = AtCommand.parse_from(raw_command)
-        logger.debug(f"<<< {raw_command.decode()}")
+            # Isolate the AT response code and parameters.
+            raw_command = self.read_buffer[:trailer]
+            command = AtCommand.parse_from(raw_command)
+            logger.debug(f"<<< {raw_command.decode()}")
 
-        # Consume the response bytes.
-        self.read_buffer = self.read_buffer[trailer + 1 :]
+            # Consume the response bytes.
+            self.read_buffer = self.read_buffer[trailer + 1 :]
 
-        if command.sub_code == AtCommand.SubCode.TEST:
-            handler_name = f'_on_{command.code.lower()}_test'
-        elif command.sub_code == AtCommand.SubCode.READ:
-            handler_name = f'_on_{command.code.lower()}_read'
-        else:
-            handler_name = f'_on_{command.code.lower()}'
+            if command.sub_code == AtCommand.SubCode.TEST:
+                handler_name = f'_on_{command.code.lower()}_test'
+            elif command.sub_code == AtCommand.SubCode.READ:
+                handler_name = f'_on_{command.code.lower()}_read'
+            else:
+                handler_name = f'_on_{command.code.lower()}'
 
-        if handler := getattr(self, handler_name, None):
-            handler(*command.parameters)
-        else:
-            logger.warning('Handler %s not found', handler_name)
-            self.send_response('ERROR')
+            if handler := getattr(self, handler_name, None):
+                handler(*command.parameters)
+            else:
+                logger.warning('Handler %s not found', handler_name)
+                self.send_response('ERROR')
 
     def send_response(self, response: str) -> None:
         """Sends an AT response."""
@@ -1367,7 +1395,7 @@ class AgProtocol(pyee.EventEmitter):
 
     def _check_remained_slc_commands(self) -> None:
         if not self._remained_slc_setup_features:
-            self.emit('slc_complete')
+            self.emit(self.EVENT_SLC_COMPLETE)
 
     def _on_brsf(self, hf_features: bytes) -> None:
         self.supported_hf_features = int(hf_features)
@@ -1386,16 +1414,17 @@ class AgProtocol(pyee.EventEmitter):
 
     def _on_bac(self, *args) -> None:
         self.supported_audio_codecs = [AudioCodec(int(value)) for value in args]
+        self.emit(self.EVENT_SUPPORTED_AUDIO_CODECS, self.supported_audio_codecs)
         self.send_ok()
 
     def _on_bcs(self, codec: bytes) -> None:
         self.active_codec = AudioCodec(int(codec))
         self.send_ok()
-        self.emit('codec_negotiation', self.active_codec)
+        self.emit(self.EVENT_CODEC_NEGOTIATION, self.active_codec)
 
     def _on_bvra(self, vrec: bytes) -> None:
         self.send_ok()
-        self.emit('voice_recognition', VoiceRecognitionState(int(vrec)))
+        self.emit(self.EVENT_VOICE_RECOGNITION, VoiceRecognitionState(int(vrec)))
 
     def _on_chld(self, operation_code: bytes) -> None:
         call_index: Optional[int] = None
@@ -1422,7 +1451,7 @@ class AgProtocol(pyee.EventEmitter):
         # Real three-way calls have more complicated situations, but this is not a popular issue - let users to handle the remaining :)
 
         self.send_ok()
-        self.emit('call_hold', operation, call_index)
+        self.emit(self.EVENT_CALL_HOLD, operation, call_index)
 
     def _on_chld_test(self) -> None:
         if not self.supports_ag_feature(AgFeature.THREE_WAY_CALLING):
@@ -1548,7 +1577,7 @@ class AgProtocol(pyee.EventEmitter):
             return
 
         self.hf_indicators[index].current_status = int(value_bytes)
-        self.emit('hf_indicator', self.hf_indicators[index])
+        self.emit(self.EVENT_HF_INDICATOR, self.hf_indicators[index])
         self.send_ok()
 
     def _on_bia(self, *args) -> None:
@@ -1557,21 +1586,21 @@ class AgProtocol(pyee.EventEmitter):
         self.send_ok()
 
     def _on_bcc(self) -> None:
-        self.emit('codec_connection_request')
+        self.emit(self.EVENT_CODEC_CONNECTION_REQUEST)
         self.send_ok()
 
     def _on_a(self) -> None:
         """ATA handler."""
-        self.emit('answer')
+        self.emit(self.EVENT_ANSWER)
         self.send_ok()
 
     def _on_d(self, number: bytes) -> None:
         """ATD handler."""
-        self.emit('dial', number.decode())
+        self.emit(self.EVENT_DIAL, number.decode())
         self.send_ok()
 
     def _on_chup(self) -> None:
-        self.emit('hang_up')
+        self.emit(self.EVENT_HANG_UP)
         self.send_ok()
 
     def _on_clcc(self) -> None:
@@ -1597,11 +1626,11 @@ class AgProtocol(pyee.EventEmitter):
         self.send_ok()
 
     def _on_vgs(self, level: bytes) -> None:
-        self.emit('speaker_volume', int(level))
+        self.emit(self.EVENT_SPEAKER_VOLUME, int(level))
         self.send_ok()
 
     def _on_vgm(self, level: bytes) -> None:
-        self.emit('microphone_volume', int(level))
+        self.emit(self.EVENT_MICROPHONE_VOLUME, int(level))
         self.send_ok()
 
 
@@ -1614,7 +1643,7 @@ class ProfileVersion(enum.IntEnum):
     """
     Profile version (normative).
 
-    Hands-Free Profile v1.8, 5.3 SDP Interoperability Requirements.
+    Hands-Free Profile v1.8, 6.3 SDP Interoperability Requirements.
     """
 
     V1_5 = 0x0105
@@ -1628,7 +1657,7 @@ class HfSdpFeature(enum.IntFlag):
     """
     HF supported features (normative).
 
-    Hands-Free Profile v1.8, 5.3 SDP Interoperability Requirements.
+    Hands-Free Profile v1.9, 6.3 SDP Interoperability Requirements.
     """
 
     EC_NR = 0x01  # Echo Cancel & Noise reduction
@@ -1636,16 +1665,17 @@ class HfSdpFeature(enum.IntFlag):
     CLI_PRESENTATION_CAPABILITY = 0x04
     VOICE_RECOGNITION_ACTIVATION = 0x08
     REMOTE_VOLUME_CONTROL = 0x10
-    WIDE_BAND = 0x20  # Wide band speech
+    WIDE_BAND_SPEECH = 0x20
     ENHANCED_VOICE_RECOGNITION_STATUS = 0x40
-    VOICE_RECOGNITION_TEST = 0x80
+    VOICE_RECOGNITION_TEXT = 0x80
+    SUPER_WIDE_BAND = 0x100
 
 
 class AgSdpFeature(enum.IntFlag):
     """
     AG supported features (normative).
 
-    Hands-Free Profile v1.8, 5.3 SDP Interoperability Requirements.
+    Hands-Free Profile v1.9, 6.3 SDP Interoperability Requirements.
     """
 
     THREE_WAY_CALLING = 0x01
@@ -1653,9 +1683,10 @@ class AgSdpFeature(enum.IntFlag):
     VOICE_RECOGNITION_FUNCTION = 0x04
     IN_BAND_RING_TONE_CAPABILITY = 0x08
     VOICE_TAG = 0x10  # Attach a number to voice tag
-    WIDE_BAND = 0x20  # Wide band speech
+    WIDE_BAND_SPEECH = 0x20
     ENHANCED_VOICE_RECOGNITION_STATUS = 0x40
-    VOICE_RECOGNITION_TEST = 0x80
+    VOICE_RECOGNITION_TEXT = 0x80
+    SUPER_WIDE_BAND_SPEED_SPEECH = 0x100
 
 
 def make_hf_sdp_records(
@@ -1688,11 +1719,11 @@ def make_hf_sdp_records(
         in configuration.supported_hf_features
     ):
         hf_supported_features |= HfSdpFeature.ENHANCED_VOICE_RECOGNITION_STATUS
-    if HfFeature.VOICE_RECOGNITION_TEST in configuration.supported_hf_features:
-        hf_supported_features |= HfSdpFeature.VOICE_RECOGNITION_TEST
+    if HfFeature.VOICE_RECOGNITION_TEXT in configuration.supported_hf_features:
+        hf_supported_features |= HfSdpFeature.VOICE_RECOGNITION_TEXT
 
     if AudioCodec.MSBC in configuration.supported_audio_codecs:
-        hf_supported_features |= HfSdpFeature.WIDE_BAND
+        hf_supported_features |= HfSdpFeature.WIDE_BAND_SPEECH
 
     return [
         sdp.ServiceAttribute(
@@ -1768,14 +1799,14 @@ def make_ag_sdp_records(
         in configuration.supported_ag_features
     ):
         ag_supported_features |= AgSdpFeature.ENHANCED_VOICE_RECOGNITION_STATUS
-    if AgFeature.VOICE_RECOGNITION_TEST in configuration.supported_ag_features:
-        ag_supported_features |= AgSdpFeature.VOICE_RECOGNITION_TEST
+    if AgFeature.VOICE_RECOGNITION_TEXT in configuration.supported_ag_features:
+        ag_supported_features |= AgSdpFeature.VOICE_RECOGNITION_TEXT
     if AgFeature.IN_BAND_RING_TONE_CAPABILITY in configuration.supported_ag_features:
         ag_supported_features |= AgSdpFeature.IN_BAND_RING_TONE_CAPABILITY
     if AgFeature.VOICE_RECOGNITION_FUNCTION in configuration.supported_ag_features:
         ag_supported_features |= AgSdpFeature.VOICE_RECOGNITION_FUNCTION
     if AudioCodec.MSBC in configuration.supported_audio_codecs:
-        ag_supported_features |= AgSdpFeature.WIDE_BAND
+        ag_supported_features |= AgSdpFeature.WIDE_BAND_SPEECH
 
     return [
         sdp.ServiceAttribute(

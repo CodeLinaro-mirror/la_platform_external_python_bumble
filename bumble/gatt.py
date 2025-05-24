@@ -27,25 +27,16 @@ import enum
 import functools
 import logging
 import struct
-from typing import (
-    Callable,
-    Dict,
-    Iterable,
-    List,
-    Optional,
-    Sequence,
-    Union,
-    TYPE_CHECKING,
-)
+from typing import Iterable, List, Optional, Sequence, TypeVar, Union
 
 from bumble.colors import color
 from bumble.core import BaseBumbleError, UUID
 from bumble.att import Attribute, AttributeValue
 
-if TYPE_CHECKING:
-    from bumble.gatt_client import AttributeProxy
-    from bumble.device import Connection
-
+# -----------------------------------------------------------------------------
+# Typing
+# -----------------------------------------------------------------------------
+_T = TypeVar('_T')
 
 # -----------------------------------------------------------------------------
 # Logging
@@ -275,6 +266,13 @@ GATT_SOURCE_AUDIO_LOCATION_CHARACTERISTIC       = UUID.from_16_bits(0x2BCC, 'Sou
 GATT_AVAILABLE_AUDIO_CONTEXTS_CHARACTERISTIC    = UUID.from_16_bits(0x2BCD, 'Available Audio Contexts')
 GATT_SUPPORTED_AUDIO_CONTEXTS_CHARACTERISTIC    = UUID.from_16_bits(0x2BCE, 'Supported Audio Contexts')
 
+# Gaming Audio Service (GMAS)
+GATT_GMAP_ROLE_CHARACTERISTIC    = UUID.from_16_bits(0x2C00, 'GMAP Role')
+GATT_UGG_FEATURES_CHARACTERISTIC = UUID.from_16_bits(0x2C01, 'UGG Features')
+GATT_UGT_FEATURES_CHARACTERISTIC = UUID.from_16_bits(0x2C02, 'UGT Features')
+GATT_BGS_FEATURES_CHARACTERISTIC = UUID.from_16_bits(0x2C03, 'BGS Features')
+GATT_BGR_FEATURES_CHARACTERISTIC = UUID.from_16_bits(0x2C04, 'BGR Features')
+
 # Hearing Access Service
 GATT_HEARING_AID_FEATURES_CHARACTERISTIC             = UUID.from_16_bits(0x2BDA, 'Hearing Aid Features')
 GATT_HEARING_AID_PRESET_CONTROL_POINT_CHARACTERISTIC = UUID.from_16_bits(0x2BDB, 'Hearing Aid Preset Control Point')
@@ -287,6 +285,22 @@ GATT_ASHA_AUDIO_CONTROL_POINT_CHARACTERISTIC  = UUID('f0d4de7e-4a88-476c-9d9f-19
 GATT_ASHA_AUDIO_STATUS_CHARACTERISTIC         = UUID('38663f1a-e711-4cac-b641-326b56404837', 'AudioStatus')
 GATT_ASHA_VOLUME_CHARACTERISTIC               = UUID('00e4ca9e-ab14-41e4-8823-f9e70c7e91df', 'Volume')
 GATT_ASHA_LE_PSM_OUT_CHARACTERISTIC           = UUID('2d410339-82b6-42aa-b34e-e2e01df8cc1a', 'LE_PSM_OUT')
+
+# Apple Notification Center Service
+GATT_ANCS_SERVICE                            = UUID('7905F431-B5CE-4E99-A40F-4B1E122D00D0', 'Apple Notification Center')
+GATT_ANCS_NOTIFICATION_SOURCE_CHARACTERISTIC = UUID('9FBF120D-6301-42D9-8C58-25E699A21DBD', 'Notification Source')
+GATT_ANCS_CONTROL_POINT_CHARACTERISTIC       = UUID('69D1D8F3-45E1-49A8-9821-9BBDFDAAD9D9', 'Control Point')
+GATT_ANCS_DATA_SOURCE_CHARACTERISTIC         = UUID('22EAC6E9-24D6-4BB5-BE44-B36ACE7C7BFB', 'Data Source')
+
+# Apple Media Service
+GATT_AMS_SERVICE                         = UUID('89D3502B-0F36-433A-8EF4-C502AD55F8DC', 'Apple Media')
+GATT_AMS_REMOTE_COMMAND_CHARACTERISTIC   = UUID('9B3C81D8-57B1-4A8A-B8DF-0E56F7CA51C2', 'Remote Command')
+GATT_AMS_ENTITY_UPDATE_CHARACTERISTIC    = UUID('2F7CABCE-808D-411F-9A0C-BB92BA96C102', 'Entity Update')
+GATT_AMS_ENTITY_ATTRIBUTE_CHARACTERISTIC = UUID('C6B2F38C-23AB-46D8-A6AB-A3A870BBD5D7', 'Entity Attribute')
+
+# Misc Apple Services
+GATT_APPLE_CONTINUITY_SERVICE = UUID('D0611E78-BBB4-4591-A5F8-487910AE4366', 'Apple Continuity')
+GATT_APPLE_NEARBY_SERVICE     = UUID('9FA480E0-4967-4542-9390-D343DC5D04AE', 'Apple Nearby')
 
 # Misc
 GATT_DEVICE_NAME_CHARACTERISTIC                                = UUID.from_16_bits(0x2A00, 'Device Name')
@@ -304,6 +318,7 @@ GATT_CENTRAL_ADDRESS_RESOLUTION__CHARACTERISTIC                = UUID.from_16_bi
 GATT_CLIENT_SUPPORTED_FEATURES_CHARACTERISTIC                  = UUID.from_16_bits(0x2B29, 'Client Supported Features')
 GATT_DATABASE_HASH_CHARACTERISTIC                              = UUID.from_16_bits(0x2B2A, 'Database Hash')
 GATT_SERVER_SUPPORTED_FEATURES_CHARACTERISTIC                  = UUID.from_16_bits(0x2B3A, 'Server Supported Features')
+GATT_LE_GATT_SECURITY_LEVELS_CHARACTERISTIC                    = UUID.from_16_bits(0x2BF5, 'E GATT Security Levels')
 
 # fmt: on
 # pylint: enable=line-too-long
@@ -312,8 +327,6 @@ GATT_SERVER_SUPPORTED_FEATURES_CHARACTERISTIC                  = UUID.from_16_bi
 # -----------------------------------------------------------------------------
 # Utils
 # -----------------------------------------------------------------------------
-
-
 def show_services(services: Iterable[Service]) -> None:
     for service in services:
         print(color(str(service), 'cyan'))
@@ -343,7 +356,7 @@ class Service(Attribute):
     def __init__(
         self,
         uuid: Union[str, UUID],
-        characteristics: List[Characteristic],
+        characteristics: Iterable[Characteristic],
         primary=True,
         included_services: Iterable[Service] = (),
     ) -> None:
@@ -362,7 +375,7 @@ class Service(Attribute):
         )
         self.uuid = uuid
         self.included_services = list(included_services)
-        self.characteristics = characteristics[:]
+        self.characteristics = list(characteristics)
         self.primary = primary
 
     def get_advertising_data(self) -> Optional[bytes]:
@@ -393,7 +406,7 @@ class TemplateService(Service):
 
     def __init__(
         self,
-        characteristics: List[Characteristic],
+        characteristics: Iterable[Characteristic],
         primary: bool = True,
         included_services: Iterable[Service] = (),
     ) -> None:
@@ -410,7 +423,7 @@ class IncludedServiceDeclaration(Attribute):
 
     def __init__(self, service: Service) -> None:
         declaration_bytes = struct.pack(
-            '<HH2s', service.handle, service.end_group_handle, service.uuid.to_bytes()
+            '<HH2s', service.handle, service.end_group_handle, bytes(service.uuid)
         )
         super().__init__(
             GATT_INCLUDE_ATTRIBUTE_TYPE, Attribute.READABLE, declaration_bytes
@@ -427,13 +440,15 @@ class IncludedServiceDeclaration(Attribute):
 
 
 # -----------------------------------------------------------------------------
-class Characteristic(Attribute):
+class Characteristic(Attribute[_T]):
     '''
     See Vol 3, Part G - 3.3 CHARACTERISTIC DEFINITION
     '''
 
     uuid: UUID
     properties: Characteristic.Properties
+
+    EVENT_SUBSCRIPTION = "subscription"
 
     class Properties(enum.IntFlag):
         """Property flags"""
@@ -490,7 +505,7 @@ class Characteristic(Attribute):
         uuid: Union[str, bytes, UUID],
         properties: Characteristic.Properties,
         permissions: Union[str, Attribute.Permissions],
-        value: Union[str, bytes, CharacteristicValue] = b'',
+        value: Union[AttributeValue[_T], _T, None] = None,
         descriptors: Sequence[Descriptor] = (),
     ):
         super().__init__(uuid, permissions, value)
@@ -525,7 +540,11 @@ class CharacteristicDeclaration(Attribute):
 
     characteristic: Characteristic
 
-    def __init__(self, characteristic: Characteristic, value_handle: int) -> None:
+    def __init__(
+        self,
+        characteristic: Characteristic,
+        value_handle: int,
+    ) -> None:
         declaration_bytes = (
             struct.pack('<BH', characteristic.properties, value_handle)
             + characteristic.uuid.to_pdu_bytes()
@@ -546,193 +565,8 @@ class CharacteristicDeclaration(Attribute):
 
 
 # -----------------------------------------------------------------------------
-class CharacteristicValue(AttributeValue):
+class CharacteristicValue(AttributeValue[_T]):
     """Same as AttributeValue, for backward compatibility"""
-
-
-# -----------------------------------------------------------------------------
-class CharacteristicAdapter:
-    '''
-    An adapter that can adapt Characteristic and AttributeProxy objects
-    by wrapping their `read_value()` and `write_value()` methods with ones that
-    return/accept encoded/decoded values.
-
-    For proxies (i.e used by a GATT client), the adaptation is one where the return
-    value of `read_value()` is decoded and the value passed to `write_value()` is
-    encoded. The `subscribe()` method, is wrapped with one where the values are decoded
-    before being passed to the subscriber.
-
-    For local values (i.e hosted by a GATT server) the adaptation is one where the
-    return value of `read_value()` is encoded and the value passed to `write_value()`
-    is decoded.
-    '''
-
-    read_value: Callable
-    write_value: Callable
-
-    def __init__(self, characteristic: Union[Characteristic, AttributeProxy]):
-        self.wrapped_characteristic = characteristic
-        self.subscribers: Dict[Callable, Callable] = (
-            {}
-        )  # Map from subscriber to proxy subscriber
-
-        if isinstance(characteristic, Characteristic):
-            self.read_value = self.read_encoded_value
-            self.write_value = self.write_encoded_value
-        else:
-            self.read_value = self.read_decoded_value
-            self.write_value = self.write_decoded_value
-            self.subscribe = self.wrapped_subscribe
-            self.unsubscribe = self.wrapped_unsubscribe
-
-    def __getattr__(self, name):
-        return getattr(self.wrapped_characteristic, name)
-
-    def __setattr__(self, name, value):
-        if name in (
-            'wrapped_characteristic',
-            'subscribers',
-            'read_value',
-            'write_value',
-            'subscribe',
-            'unsubscribe',
-        ):
-            super().__setattr__(name, value)
-        else:
-            setattr(self.wrapped_characteristic, name, value)
-
-    async def read_encoded_value(self, connection):
-        return self.encode_value(
-            await self.wrapped_characteristic.read_value(connection)
-        )
-
-    async def write_encoded_value(self, connection, value):
-        return await self.wrapped_characteristic.write_value(
-            connection, self.decode_value(value)
-        )
-
-    async def read_decoded_value(self):
-        return self.decode_value(await self.wrapped_characteristic.read_value())
-
-    async def write_decoded_value(self, value, with_response=False):
-        return await self.wrapped_characteristic.write_value(
-            self.encode_value(value), with_response
-        )
-
-    def encode_value(self, value):
-        return value
-
-    def decode_value(self, value):
-        return value
-
-    def wrapped_subscribe(self, subscriber=None):
-        if subscriber is not None:
-            if subscriber in self.subscribers:
-                # We already have a proxy subscriber
-                subscriber = self.subscribers[subscriber]
-            else:
-                # Create and register a proxy that will decode the value
-                original_subscriber = subscriber
-
-                def on_change(value):
-                    original_subscriber(self.decode_value(value))
-
-                self.subscribers[subscriber] = on_change
-                subscriber = on_change
-
-        return self.wrapped_characteristic.subscribe(subscriber)
-
-    def wrapped_unsubscribe(self, subscriber=None):
-        if subscriber in self.subscribers:
-            subscriber = self.subscribers.pop(subscriber)
-
-        return self.wrapped_characteristic.unsubscribe(subscriber)
-
-    def __str__(self) -> str:
-        wrapped = str(self.wrapped_characteristic)
-        return f'{self.__class__.__name__}({wrapped})'
-
-
-# -----------------------------------------------------------------------------
-class DelegatedCharacteristicAdapter(CharacteristicAdapter):
-    '''
-    Adapter that converts bytes values using an encode and a decode function.
-    '''
-
-    def __init__(self, characteristic, encode=None, decode=None):
-        super().__init__(characteristic)
-        self.encode = encode
-        self.decode = decode
-
-    def encode_value(self, value):
-        return self.encode(value) if self.encode else value
-
-    def decode_value(self, value):
-        return self.decode(value) if self.decode else value
-
-
-# -----------------------------------------------------------------------------
-class PackedCharacteristicAdapter(CharacteristicAdapter):
-    '''
-    Adapter that packs/unpacks characteristic values according to a standard
-    Python `struct` format.
-    For formats with a single value, the adapted `read_value` and `write_value`
-    methods return/accept single values. For formats with multiple values,
-    they return/accept a tuple with the same number of elements as is required for
-    the format.
-    '''
-
-    def __init__(self, characteristic, pack_format):
-        super().__init__(characteristic)
-        self.struct = struct.Struct(pack_format)
-
-    def pack(self, *values):
-        return self.struct.pack(*values)
-
-    def unpack(self, buffer):
-        return self.struct.unpack(buffer)
-
-    def encode_value(self, value):
-        return self.pack(*value if isinstance(value, tuple) else (value,))
-
-    def decode_value(self, value):
-        unpacked = self.unpack(value)
-        return unpacked[0] if len(unpacked) == 1 else unpacked
-
-
-# -----------------------------------------------------------------------------
-class MappedCharacteristicAdapter(PackedCharacteristicAdapter):
-    '''
-    Adapter that packs/unpacks characteristic values according to a standard
-    Python `struct` format.
-    The adapted `read_value` and `write_value` methods return/accept aa dictionary which
-    is packed/unpacked according to format, with the arguments extracted from the
-    dictionary by key, in the same order as they occur in the `keys` parameter.
-    '''
-
-    def __init__(self, characteristic, pack_format, keys):
-        super().__init__(characteristic, pack_format)
-        self.keys = keys
-
-    # pylint: disable=arguments-differ
-    def pack(self, values):
-        return super().pack(*(values[key] for key in self.keys))
-
-    def unpack(self, buffer):
-        return dict(zip(self.keys, super().unpack(buffer)))
-
-
-# -----------------------------------------------------------------------------
-class UTF8CharacteristicAdapter(CharacteristicAdapter):
-    '''
-    Adapter that converts strings to/from bytes using UTF-8 encoding
-    '''
-
-    def encode_value(self, value: str) -> bytes:
-        return value.encode('utf-8')
-
-    def decode_value(self, value: bytes) -> str:
-        return value.decode('utf-8')
 
 
 # -----------------------------------------------------------------------------
@@ -745,11 +579,7 @@ class Descriptor(Attribute):
         if isinstance(self.value, bytes):
             value_str = self.value.hex()
         elif isinstance(self.value, CharacteristicValue):
-            value = self.value.read(None)
-            if isinstance(value, bytes):
-                value_str = value.hex()
-            else:
-                value_str = '<async>'
+            value_str = '<dynamic>'
         else:
             value_str = '<...>'
         return (
@@ -769,3 +599,23 @@ class ClientCharacteristicConfigurationBits(enum.IntFlag):
     DEFAULT = 0x0000
     NOTIFICATION = 0x0001
     INDICATION = 0x0002
+
+
+# -----------------------------------------------------------------------------
+class ClientSupportedFeatures(enum.IntFlag):
+    '''
+    See Vol 3, Part G - 7.2 - Table 7.6: Client Supported Features bit assignments.
+    '''
+
+    ROBUST_CACHING = 0x01
+    ENHANCED_ATT_BEARER = 0x02
+    MULTIPLE_HANDLE_VALUE_NOTIFICATIONS = 0x04
+
+
+# -----------------------------------------------------------------------------
+class ServerSupportedFeatures(enum.IntFlag):
+    '''
+    See Vol 3, Part G - 7.4 - Table 7.11: Server Supported Features bit assignments.
+    '''
+
+    EATT_SUPPORTED = 0x01

@@ -19,18 +19,20 @@ import asyncio
 import functools
 import logging
 import os
-from types import LambdaType
 import pytest
-from unittest import mock
 
 from bumble.core import (
-    BT_BR_EDR_TRANSPORT,
-    BT_LE_TRANSPORT,
-    BT_PERIPHERAL_ROLE,
+    PhysicalTransport,
     ConnectionParameters,
 )
-from bumble.device import AdvertisingParameters, Connection, Device
-from bumble.host import AclPacketQueue, Host
+from bumble.device import (
+    AdvertisingEventProperties,
+    AdvertisingParameters,
+    Connection,
+    Device,
+    PeriodicAdvertisingParameters,
+)
+from bumble.host import DataPacketQueue, Host
 from bumble.hci import (
     HCI_ACCEPT_CONNECTION_REQUEST_COMMAND,
     HCI_COMMAND_STATUS_PENDING,
@@ -39,6 +41,7 @@ from bumble.hci import (
     HCI_CONNECTION_FAILED_TO_BE_ESTABLISHED_ERROR,
     Address,
     OwnAddressType,
+    Role,
     HCI_Command_Complete_Event,
     HCI_Command_Status_Event,
     HCI_Connection_Complete_Event,
@@ -46,12 +49,8 @@ from bumble.hci import (
     HCI_Error,
     HCI_Packet,
 )
-from bumble.gatt import (
-    GATT_GENERIC_ACCESS_SERVICE,
-    GATT_CHARACTERISTIC_ATTRIBUTE_TYPE,
-    GATT_DEVICE_NAME_CHARACTERISTIC,
-    GATT_APPEARANCE_CHARACTERISTIC,
-)
+from bumble import utils
+from bumble import gatt
 
 from .test_utils import TwoDevices, async_barrier
 
@@ -86,9 +85,9 @@ async def test_device_connect_parallel():
     def _send(packet):
         pass
 
-    d0.host.acl_packet_queue = AclPacketQueue(0, 0, _send)
-    d1.host.acl_packet_queue = AclPacketQueue(0, 0, _send)
-    d2.host.acl_packet_queue = AclPacketQueue(0, 0, _send)
+    d0.host.acl_packet_queue = DataPacketQueue(0, 0, _send)
+    d1.host.acl_packet_queue = DataPacketQueue(0, 0, _send)
+    d2.host.acl_packet_queue = DataPacketQueue(0, 0, _send)
 
     # enable classic
     d0.classic_enabled = True
@@ -230,10 +229,10 @@ async def test_device_connect_parallel():
     [c01, c02, a10, a20] = await asyncio.gather(
         *[
             asyncio.create_task(
-                d0.connect(d1.public_address, transport=BT_BR_EDR_TRANSPORT)
+                d0.connect(d1.public_address, transport=PhysicalTransport.BR_EDR)
             ),
             asyncio.create_task(
-                d0.connect(d2.public_address, transport=BT_BR_EDR_TRANSPORT)
+                d0.connect(d2.public_address, transport=PhysicalTransport.BR_EDR)
             ),
             d1_accept_task,
             d2_accept_task,
@@ -253,7 +252,7 @@ async def test_device_connect_parallel():
 @pytest.mark.asyncio
 async def test_flush():
     d0 = Device(host=Host(None, None))
-    task = d0.abort_on('flush', asyncio.sleep(10000))
+    task = utils.cancel_on_event(d0, 'flush', asyncio.sleep(10000))
     await d0.host.flush()
     try:
         await task
@@ -265,7 +264,8 @@ async def test_flush():
 # -----------------------------------------------------------------------------
 @pytest.mark.asyncio
 async def test_legacy_advertising():
-    device = Device(host=mock.AsyncMock(Host))
+    device = TwoDevices()[0]
+    await device.power_on()
 
     # Start advertising
     await device.start_advertising()
@@ -283,16 +283,19 @@ async def test_legacy_advertising():
 )
 @pytest.mark.asyncio
 async def test_legacy_advertising_disconnection(auto_restart):
-    device = Device(host=mock.AsyncMock(spec=Host))
+    devices = TwoDevices()
+    device = devices[0]
+    devices.controllers[0].le_features = bytes.fromhex('ffffffffffffffff')
+    await device.power_on()
     peer_address = Address('F0:F1:F2:F3:F4:F5')
     await device.start_advertising(auto_restart=auto_restart)
     device.on_connection(
         0x0001,
-        BT_LE_TRANSPORT,
+        PhysicalTransport.LE,
         peer_address,
         None,
         None,
-        BT_PERIPHERAL_ROLE,
+        Role.PERIPHERAL,
         ConnectionParameters(0, 0, 0),
     )
 
@@ -305,6 +308,11 @@ async def test_legacy_advertising_disconnection(auto_restart):
     await async_barrier()
 
     if auto_restart:
+        assert device.legacy_advertising_set
+        started = asyncio.Event()
+        if not device.is_advertising:
+            device.legacy_advertising_set.once('start', started.set)
+            await asyncio.wait_for(started.wait(), _TIMEOUT)
         assert device.is_advertising
     else:
         assert not device.is_advertising
@@ -313,7 +321,8 @@ async def test_legacy_advertising_disconnection(auto_restart):
 # -----------------------------------------------------------------------------
 @pytest.mark.asyncio
 async def test_extended_advertising():
-    device = Device(host=mock.AsyncMock(Host))
+    device = TwoDevices()[0]
+    await device.power_on()
 
     # Start advertising
     advertising_set = await device.create_advertising_set()
@@ -332,18 +341,19 @@ async def test_extended_advertising():
 )
 @pytest.mark.asyncio
 async def test_extended_advertising_connection(own_address_type):
-    device = Device(host=mock.AsyncMock(spec=Host))
+    device = TwoDevices()[0]
+    await device.power_on()
     peer_address = Address('F0:F1:F2:F3:F4:F5')
     advertising_set = await device.create_advertising_set(
         advertising_parameters=AdvertisingParameters(own_address_type=own_address_type)
     )
     device.on_connection(
         0x0001,
-        BT_LE_TRANSPORT,
+        PhysicalTransport.LE,
         peer_address,
         None,
         None,
-        BT_PERIPHERAL_ROLE,
+        Role.PERIPHERAL,
         ConnectionParameters(0, 0, 0),
     )
     device.on_advertising_set_termination(
@@ -368,8 +378,10 @@ async def test_extended_advertising_connection(own_address_type):
 )
 @pytest.mark.asyncio
 async def test_extended_advertising_connection_out_of_order(own_address_type):
-    device = Device(host=mock.AsyncMock(spec=Host))
-    peer_address = Address('F0:F1:F2:F3:F4:F5')
+    devices = TwoDevices()
+    device = devices[0]
+    devices.controllers[0].le_features = bytes.fromhex('ffffffffffffffff')
+    await device.power_on()
     advertising_set = await device.create_advertising_set(
         advertising_parameters=AdvertisingParameters(own_address_type=own_address_type)
     )
@@ -381,11 +393,11 @@ async def test_extended_advertising_connection_out_of_order(own_address_type):
     )
     device.on_connection(
         0x0001,
-        BT_LE_TRANSPORT,
-        peer_address,
+        PhysicalTransport.LE,
+        Address('F0:F1:F2:F3:F4:F5'),
         None,
         None,
-        BT_PERIPHERAL_ROLE,
+        Role.PERIPHERAL,
         ConnectionParameters(0, 0, 0),
     )
 
@@ -395,6 +407,34 @@ async def test_extended_advertising_connection_out_of_order(own_address_type):
         assert device.lookup_connection(0x0001).self_address == device.random_address
 
     await async_barrier()
+
+
+# -----------------------------------------------------------------------------
+@pytest.mark.asyncio
+async def test_periodic_advertising():
+    device = TwoDevices()[0]
+    await device.power_on()
+
+    # Start advertising
+    advertising_set = await device.create_advertising_set(
+        advertising_parameters=AdvertisingParameters(
+            advertising_event_properties=AdvertisingEventProperties(
+                is_connectable=False
+            )
+        ),
+        advertising_data=b'123',
+        periodic_advertising_parameters=PeriodicAdvertisingParameters(),
+        periodic_advertising_data=b'abc',
+    )
+    assert device.extended_advertising_sets
+    assert advertising_set.enabled
+    assert not advertising_set.periodic_enabled
+
+    await advertising_set.start_periodic()
+    assert advertising_set.periodic_enabled
+
+    await advertising_set.stop_periodic()
+    assert not advertising_set.periodic_enabled
 
 
 # -----------------------------------------------------------------------------
@@ -443,8 +483,8 @@ async def test_cis():
         _cig_id: int,
         _cis_id: int,
     ):
-        acl_connection.abort_on(
-            'disconnection', devices[1].accept_cis_request(cis_handle)
+        utils.cancel_on_event(
+            acl_connection, 'disconnection', devices[1].accept_cis_request(cis_handle)
         )
         peripheral_cis_futures[cis_handle] = asyncio.get_running_loop().create_future()
 
@@ -547,32 +587,54 @@ async def test_power_on_default_static_address_should_not_be_any():
 
 
 # -----------------------------------------------------------------------------
-def test_gatt_services_with_gas():
+def test_gatt_services_with_gas_and_gatt():
     device = Device(host=Host(None, None))
 
-    # there should be one service and two chars, therefore 5 attributes
-    assert len(device.gatt_server.attributes) == 5
-    assert device.gatt_server.attributes[0].uuid == GATT_GENERIC_ACCESS_SERVICE
-    assert device.gatt_server.attributes[1].type == GATT_CHARACTERISTIC_ATTRIBUTE_TYPE
-    assert device.gatt_server.attributes[2].uuid == GATT_DEVICE_NAME_CHARACTERISTIC
-    assert device.gatt_server.attributes[3].type == GATT_CHARACTERISTIC_ATTRIBUTE_TYPE
-    assert device.gatt_server.attributes[4].uuid == GATT_APPEARANCE_CHARACTERISTIC
+    # there should be 2 service, 5 chars, and 1 descriptors, therefore 13 attributes
+    assert len(device.gatt_server.attributes) == 13
+    assert device.gatt_server.attributes[0].uuid == gatt.GATT_GENERIC_ACCESS_SERVICE
+    assert (
+        device.gatt_server.attributes[1].type == gatt.GATT_CHARACTERISTIC_ATTRIBUTE_TYPE
+    )
+    assert device.gatt_server.attributes[2].uuid == gatt.GATT_DEVICE_NAME_CHARACTERISTIC
+    assert (
+        device.gatt_server.attributes[3].type == gatt.GATT_CHARACTERISTIC_ATTRIBUTE_TYPE
+    )
+    assert device.gatt_server.attributes[4].uuid == gatt.GATT_APPEARANCE_CHARACTERISTIC
 
-
-# -----------------------------------------------------------------------------
-def test_gatt_services_without_gas():
-    device = Device(host=Host(None, None), generic_access_service=False)
-
-    # there should be no services
-    assert len(device.gatt_server.attributes) == 0
+    assert device.gatt_server.attributes[5].uuid == gatt.GATT_GENERIC_ATTRIBUTE_SERVICE
+    assert (
+        device.gatt_server.attributes[6].type == gatt.GATT_CHARACTERISTIC_ATTRIBUTE_TYPE
+    )
+    assert (
+        device.gatt_server.attributes[7].uuid
+        == gatt.GATT_SERVICE_CHANGED_CHARACTERISTIC
+    )
+    assert (
+        device.gatt_server.attributes[8].type
+        == gatt.GATT_CLIENT_CHARACTERISTIC_CONFIGURATION_DESCRIPTOR
+    )
+    assert (
+        device.gatt_server.attributes[9].type == gatt.GATT_CHARACTERISTIC_ATTRIBUTE_TYPE
+    )
+    assert (
+        device.gatt_server.attributes[10].uuid
+        == gatt.GATT_CLIENT_SUPPORTED_FEATURES_CHARACTERISTIC
+    )
+    assert (
+        device.gatt_server.attributes[11].type
+        == gatt.GATT_CHARACTERISTIC_ATTRIBUTE_TYPE
+    )
+    assert (
+        device.gatt_server.attributes[12].uuid == gatt.GATT_DATABASE_HASH_CHARACTERISTIC
+    )
 
 
 # -----------------------------------------------------------------------------
 async def run_test_device():
     await test_device_connect_parallel()
     await test_flush()
-    await test_gatt_services_with_gas()
-    await test_gatt_services_without_gas()
+    await test_gatt_services_with_gas_and_gatt()
 
 
 # -----------------------------------------------------------------------------

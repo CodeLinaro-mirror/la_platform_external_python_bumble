@@ -29,24 +29,25 @@ import logging
 import struct
 from datetime import datetime
 from typing import (
+    Any,
+    Callable,
+    Dict,
+    Generic,
+    Iterable,
     List,
     Optional,
-    Dict,
-    Tuple,
-    Callable,
-    Union,
-    Any,
-    Iterable,
-    Type,
     Set,
+    Tuple,
+    Union,
+    Type,
+    TypeVar,
     TYPE_CHECKING,
 )
 
-from pyee import EventEmitter
 
-from .colors import color
-from .hci import HCI_Constant
-from .att import (
+from bumble.colors import color
+from bumble.hci import HCI_Constant
+from bumble.att import (
     ATT_ATTRIBUTE_NOT_FOUND_ERROR,
     ATT_ATTRIBUTE_NOT_LONG_ERROR,
     ATT_CID,
@@ -67,9 +68,10 @@ from .att import (
     ATT_Write_Request,
     ATT_Error,
 )
-from . import core
-from .core import UUID, InvalidStateError
-from .gatt import (
+from bumble import utils
+from bumble import core
+from bumble.core import UUID, InvalidStateError
+from bumble.gatt import (
     GATT_CHARACTERISTIC_ATTRIBUTE_TYPE,
     GATT_CLIENT_CHARACTERISTIC_CONFIGURATION_DESCRIPTOR,
     GATT_PRIMARY_SERVICE_ATTRIBUTE_TYPE,
@@ -78,11 +80,17 @@ from .gatt import (
     GATT_INCLUDE_ATTRIBUTE_TYPE,
     Characteristic,
     ClientCharacteristicConfigurationBits,
+    InvalidServiceError,
     TemplateService,
 )
 
+# -----------------------------------------------------------------------------
+# Typing
+# -----------------------------------------------------------------------------
 if TYPE_CHECKING:
     from bumble.device import Connection
+
+_T = TypeVar('_T')
 
 # -----------------------------------------------------------------------------
 # Logging
@@ -109,31 +117,31 @@ def show_services(services: Iterable[ServiceProxy]) -> None:
 # -----------------------------------------------------------------------------
 # Proxies
 # -----------------------------------------------------------------------------
-class AttributeProxy(EventEmitter):
+class AttributeProxy(utils.EventEmitter, Generic[_T]):
     def __init__(
         self, client: Client, handle: int, end_group_handle: int, attribute_type: UUID
     ) -> None:
-        EventEmitter.__init__(self)
+        utils.EventEmitter.__init__(self)
         self.client = client
         self.handle = handle
         self.end_group_handle = end_group_handle
         self.type = attribute_type
 
-    async def read_value(self, no_long_read: bool = False) -> bytes:
+    async def read_value(self, no_long_read: bool = False) -> _T:
         return self.decode_value(
             await self.client.read_value(self.handle, no_long_read)
         )
 
-    async def write_value(self, value, with_response=False):
+    async def write_value(self, value: _T, with_response=False):
         return await self.client.write_value(
             self.handle, self.encode_value(value), with_response
         )
 
-    def encode_value(self, value: Any) -> bytes:
-        return value
+    def encode_value(self, value: _T) -> bytes:
+        return value  # type: ignore
 
-    def decode_value(self, value_bytes: bytes) -> Any:
-        return value_bytes
+    def decode_value(self, value: bytes) -> _T:
+        return value  # type: ignore
 
     def __str__(self) -> str:
         return f'Attribute(handle=0x{self.handle:04X}, type={self.type})'
@@ -141,7 +149,7 @@ class AttributeProxy(EventEmitter):
 
 class ServiceProxy(AttributeProxy):
     uuid: UUID
-    characteristics: List[CharacteristicProxy]
+    characteristics: List[CharacteristicProxy[bytes]]
     included_services: List[ServiceProxy]
 
     @staticmethod
@@ -162,29 +170,48 @@ class ServiceProxy(AttributeProxy):
         self.uuid = uuid
         self.characteristics = []
 
-    async def discover_characteristics(self, uuids=()):
+    async def discover_characteristics(
+        self, uuids=()
+    ) -> list[CharacteristicProxy[bytes]]:
         return await self.client.discover_characteristics(uuids, self)
 
-    def get_characteristics_by_uuid(self, uuid):
+    def get_characteristics_by_uuid(
+        self, uuid: UUID
+    ) -> list[CharacteristicProxy[bytes]]:
+        """Get all the characteristics with a specified UUID."""
         return self.client.get_characteristics_by_uuid(uuid, self)
+
+    def get_required_characteristic_by_uuid(
+        self, uuid: UUID
+    ) -> CharacteristicProxy[bytes]:
+        """
+        Get the first characteristic with a specified UUID.
+
+        If no characteristic with that UUID is found, an InvalidServiceError is raised.
+        """
+        if not (characteristics := self.get_characteristics_by_uuid(uuid)):
+            raise InvalidServiceError(f'{uuid} characteristic not found')
+        return characteristics[0]
 
     def __str__(self) -> str:
         return f'Service(handle=0x{self.handle:04X}, uuid={self.uuid})'
 
 
-class CharacteristicProxy(AttributeProxy):
+class CharacteristicProxy(AttributeProxy[_T]):
     properties: Characteristic.Properties
     descriptors: List[DescriptorProxy]
-    subscribers: Dict[Any, Callable[[bytes], Any]]
+    subscribers: Dict[Any, Callable[[_T], Any]]
+
+    EVENT_UPDATE = "update"
 
     def __init__(
         self,
-        client,
-        handle,
-        end_group_handle,
-        uuid,
+        client: Client,
+        handle: int,
+        end_group_handle: int,
+        uuid: UUID,
         properties: int,
-    ):
+    ) -> None:
         super().__init__(client, handle, end_group_handle, uuid)
         self.uuid = uuid
         self.properties = Characteristic.Properties(properties)
@@ -192,21 +219,21 @@ class CharacteristicProxy(AttributeProxy):
         self.descriptors_discovered = False
         self.subscribers = {}  # Map from subscriber to proxy subscriber
 
-    def get_descriptor(self, descriptor_type):
+    def get_descriptor(self, descriptor_type: UUID) -> Optional[DescriptorProxy]:
         for descriptor in self.descriptors:
             if descriptor.type == descriptor_type:
                 return descriptor
 
         return None
 
-    async def discover_descriptors(self):
+    async def discover_descriptors(self) -> list[DescriptorProxy]:
         return await self.client.discover_descriptors(self)
 
     async def subscribe(
         self,
-        subscriber: Optional[Callable[[bytes], Any]] = None,
+        subscriber: Optional[Callable[[_T], Any]] = None,
         prefer_notify: bool = True,
-    ):
+    ) -> None:
         if subscriber is not None:
             if subscriber in self.subscribers:
                 # We already have a proxy subscriber
@@ -221,13 +248,13 @@ class CharacteristicProxy(AttributeProxy):
                 self.subscribers[subscriber] = on_change
                 subscriber = on_change
 
-        return await self.client.subscribe(self, subscriber, prefer_notify)
+        await self.client.subscribe(self, subscriber, prefer_notify)
 
-    async def unsubscribe(self, subscriber=None, force=False):
+    async def unsubscribe(self, subscriber=None, force=False) -> None:
         if subscriber in self.subscribers:
             subscriber = self.subscribers.pop(subscriber)
 
-        return await self.client.unsubscribe(self, subscriber, force)
+        await self.client.unsubscribe(self, subscriber, force)
 
     def __str__(self) -> str:
         return (
@@ -237,8 +264,8 @@ class CharacteristicProxy(AttributeProxy):
         )
 
 
-class DescriptorProxy(AttributeProxy):
-    def __init__(self, client, handle, descriptor_type):
+class DescriptorProxy(AttributeProxy[bytes]):
+    def __init__(self, client: Client, handle: int, descriptor_type: UUID) -> None:
         super().__init__(client, handle, 0, descriptor_type)
 
     def __str__(self) -> str:
@@ -283,7 +310,7 @@ class Client:
         self.services = []
         self.cached_values = {}
 
-        connection.on('disconnection', self.on_disconnection)
+        connection.on(connection.EVENT_DISCONNECTION, self.on_disconnection)
 
     def send_gatt_pdu(self, pdu: bytes) -> None:
         self.connection.send_l2cap_pdu(ATT_CID, pdu)
@@ -292,7 +319,7 @@ class Client:
         logger.debug(
             f'GATT Command from client: [0x{self.connection.handle:04X}] {command}'
         )
-        self.send_gatt_pdu(command.to_bytes())
+        self.send_gatt_pdu(bytes(command))
 
     async def send_request(self, request: ATT_PDU):
         logger.debug(
@@ -310,7 +337,7 @@ class Client:
             self.pending_request = request
 
             try:
-                self.send_gatt_pdu(request.to_bytes())
+                self.send_gatt_pdu(bytes(request))
                 response = await asyncio.wait_for(
                     self.pending_response, GATT_REQUEST_TIMEOUT
                 )
@@ -328,7 +355,7 @@ class Client:
             f'GATT Confirmation from client: [0x{self.connection.handle:04X}] '
             f'{confirmation}'
         )
-        self.send_gatt_pdu(confirmation.to_bytes())
+        self.send_gatt_pdu(bytes(confirmation))
 
     async def request_mtu(self, mtu: int) -> int:
         # Check the range
@@ -357,7 +384,7 @@ class Client:
 
     def get_characteristics_by_uuid(
         self, uuid: UUID, service: Optional[ServiceProxy] = None
-    ) -> List[CharacteristicProxy]:
+    ) -> List[CharacteristicProxy[bytes]]:
         services = [service] if service else self.services
         return [
             c
@@ -609,7 +636,7 @@ class Client:
 
     async def discover_characteristics(
         self, uuids, service: Optional[ServiceProxy]
-    ) -> List[CharacteristicProxy]:
+    ) -> List[CharacteristicProxy[bytes]]:
         '''
         See Vol 3, Part G - 4.6.1 Discover All Characteristics of a Service and 4.6.2
         Discover Characteristics by UUID
@@ -622,12 +649,12 @@ class Client:
         services = [service] if service else self.services
 
         # Perform characteristic discovery for each service
-        discovered_characteristics: List[CharacteristicProxy] = []
+        discovered_characteristics: List[CharacteristicProxy[bytes]] = []
         for service in services:
             starting_handle = service.handle
             ending_handle = service.end_group_handle
 
-            characteristics: List[CharacteristicProxy] = []
+            characteristics: List[CharacteristicProxy[bytes]] = []
             while starting_handle <= ending_handle:
                 response = await self.send_request(
                     ATT_Read_By_Type_Request(
@@ -667,7 +694,7 @@ class Client:
 
                     properties, handle = struct.unpack_from('<BH', attribute_value)
                     characteristic_uuid = UUID.from_bytes(attribute_value[3:])
-                    characteristic = CharacteristicProxy(
+                    characteristic = CharacteristicProxy[bytes](
                         self, handle, 0, characteristic_uuid, properties
                     )
 
@@ -760,7 +787,7 @@ class Client:
 
         return descriptors
 
-    async def discover_attributes(self) -> List[AttributeProxy]:
+    async def discover_attributes(self) -> List[AttributeProxy[bytes]]:
         '''
         Discover all attributes, regardless of type
         '''
@@ -793,7 +820,7 @@ class Client:
                     logger.warning(f'bogus handle value: {attribute_handle}')
                     return []
 
-                attribute = AttributeProxy(
+                attribute = AttributeProxy[bytes](
                     self, attribute_handle, 0, UUID.from_bytes(attribute_uuid)
                 )
                 attributes.append(attribute)
@@ -806,7 +833,7 @@ class Client:
     async def subscribe(
         self,
         characteristic: CharacteristicProxy,
-        subscriber: Optional[Callable[[bytes], Any]] = None,
+        subscriber: Optional[Callable[[Any], Any]] = None,
         prefer_notify: bool = True,
     ) -> None:
         # If we haven't already discovered the descriptors for this characteristic,
@@ -856,7 +883,7 @@ class Client:
     async def unsubscribe(
         self,
         characteristic: CharacteristicProxy,
-        subscriber: Optional[Callable[[bytes], Any]] = None,
+        subscriber: Optional[Callable[[Any], Any]] = None,
         force: bool = False,
     ) -> None:
         '''
@@ -897,6 +924,12 @@ class Client:
                     subscribers := subscriber_set.get(characteristic.handle)
                 ) and subscriber in subscribers:
                     subscribers.remove(subscriber)
+
+                    # The characteristic itself is added as subscriber. If it is the
+                    # last remaining subscriber, we remove it, such that the clean up
+                    # works correctly. Otherwise the CCCD never is set back to 0.
+                    if len(subscribers) == 1 and characteristic in subscribers:
+                        subscribers.remove(characteristic)
 
                     # Cleanup if we removed the last one
                     if not subscribers:
@@ -1111,7 +1144,7 @@ class Client:
             if callable(subscriber):
                 subscriber(notification.attribute_value)
             else:
-                subscriber.emit('update', notification.attribute_value)
+                subscriber.emit(subscriber.EVENT_UPDATE, notification.attribute_value)
 
     def on_att_handle_value_indication(self, indication):
         # Call all subscribers
@@ -1126,7 +1159,7 @@ class Client:
             if callable(subscriber):
                 subscriber(indication.attribute_value)
             else:
-                subscriber.emit('update', indication.attribute_value)
+                subscriber.emit(subscriber.EVENT_UPDATE, indication.attribute_value)
 
         # Confirm that we received the indication
         self.send_confirmation(ATT_Handle_Value_Confirmation())

@@ -1,4 +1,4 @@
-# Copyright 2021-2022 Google LLC
+# Copyright 2021-2025 Google LLC
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -16,14 +16,14 @@
 # Imports
 # -----------------------------------------------------------------------------
 from __future__ import annotations
-import dataclasses
+
 import enum
 import struct
-from typing import List, Optional, Tuple, Union, cast, Dict
+from typing import cast, overload, Literal, Union, Optional
 from typing_extensions import Self
 
 from bumble.company_ids import COMPANY_IDENTIFIERS
-from bumble.utils import OpenIntEnum
+from bumble import utils
 
 
 # -----------------------------------------------------------------------------
@@ -31,11 +31,12 @@ from bumble.utils import OpenIntEnum
 # -----------------------------------------------------------------------------
 # fmt: off
 
-BT_CENTRAL_ROLE    = 0
-BT_PERIPHERAL_ROLE = 1
+class PhysicalTransport(enum.IntEnum):
+    BR_EDR = 0
+    LE     = 1
 
-BT_BR_EDR_TRANSPORT = 0
-BT_LE_TRANSPORT     = 1
+BT_BR_EDR_TRANSPORT = PhysicalTransport.BR_EDR
+BT_LE_TRANSPORT     = PhysicalTransport.LE
 
 
 # fmt: on
@@ -57,7 +58,7 @@ def bit_flags_to_strings(bits, bit_flag_names):
     return names
 
 
-def name_or_number(dictionary: Dict[int, str], number: int, width: int = 2) -> str:
+def name_or_number(dictionary: dict[int, str], number: int, width: int = 2) -> str:
     name = dictionary.get(number)
     if name is not None:
         return name
@@ -200,7 +201,7 @@ class UUID:
     '''
 
     BASE_UUID = bytes.fromhex('00001000800000805F9B34FB')[::-1]  # little-endian
-    UUIDS: List[UUID] = []  # Registry of all instances created
+    UUIDS: list[UUID] = []  # Registry of all instances created
 
     uuid_bytes: bytes
     name: Optional[str]
@@ -259,11 +260,11 @@ class UUID:
         return cls.from_bytes(struct.pack('<I', uuid_32), name)
 
     @classmethod
-    def parse_uuid(cls, uuid_as_bytes: bytes, offset: int) -> Tuple[int, UUID]:
+    def parse_uuid(cls, uuid_as_bytes: bytes, offset: int) -> tuple[int, UUID]:
         return len(uuid_as_bytes), cls.from_bytes(uuid_as_bytes[offset:])
 
     @classmethod
-    def parse_uuid_2(cls, uuid_as_bytes: bytes, offset: int) -> Tuple[int, UUID]:
+    def parse_uuid_2(cls, uuid_as_bytes: bytes, offset: int) -> tuple[int, UUID]:
         return offset + 2, cls.from_bytes(uuid_as_bytes[offset : offset + 2])
 
     def to_bytes(self, force_128: bool = False) -> bytes:
@@ -729,7 +730,7 @@ class DeviceClass:
 # Appearance
 # -----------------------------------------------------------------------------
 class Appearance:
-    class Category(OpenIntEnum):
+    class Category(utils.OpenIntEnum):
         UNKNOWN = 0x0000
         PHONE = 0x0001
         COMPUTER = 0x0002
@@ -783,13 +784,13 @@ class Appearance:
         SPIROMETER = 0x0037
         OUTDOOR_SPORTS_ACTIVITY = 0x0051
 
-    class UnknownSubcategory(OpenIntEnum):
+    class UnknownSubcategory(utils.OpenIntEnum):
         GENERIC_UNKNOWN = 0x00
 
-    class PhoneSubcategory(OpenIntEnum):
+    class PhoneSubcategory(utils.OpenIntEnum):
         GENERIC_PHONE = 0x00
 
-    class ComputerSubcategory(OpenIntEnum):
+    class ComputerSubcategory(utils.OpenIntEnum):
         GENERIC_COMPUTER = 0x00
         DESKTOP_WORKSTATION = 0x01
         SERVER_CLASS_COMPUTER = 0x02
@@ -807,49 +808,49 @@ class Appearance:
         MINI_PC = 0x0E
         STICK_PC = 0x0F
 
-    class WatchSubcategory(OpenIntEnum):
-        GENENERIC_WATCH = 0x00
+    class WatchSubcategory(utils.OpenIntEnum):
+        GENERIC_WATCH = 0x00
         SPORTS_WATCH = 0x01
         SMARTWATCH = 0x02
 
-    class ClockSubcategory(OpenIntEnum):
+    class ClockSubcategory(utils.OpenIntEnum):
         GENERIC_CLOCK = 0x00
 
-    class DisplaySubcategory(OpenIntEnum):
+    class DisplaySubcategory(utils.OpenIntEnum):
         GENERIC_DISPLAY = 0x00
 
-    class RemoteControlSubcategory(OpenIntEnum):
+    class RemoteControlSubcategory(utils.OpenIntEnum):
         GENERIC_REMOTE_CONTROL = 0x00
 
-    class EyeglassesSubcategory(OpenIntEnum):
+    class EyeglassesSubcategory(utils.OpenIntEnum):
         GENERIC_EYEGLASSES = 0x00
 
-    class TagSubcategory(OpenIntEnum):
+    class TagSubcategory(utils.OpenIntEnum):
         GENERIC_TAG = 0x00
 
-    class KeyringSubcategory(OpenIntEnum):
+    class KeyringSubcategory(utils.OpenIntEnum):
         GENERIC_KEYRING = 0x00
 
-    class MediaPlayerSubcategory(OpenIntEnum):
+    class MediaPlayerSubcategory(utils.OpenIntEnum):
         GENERIC_MEDIA_PLAYER = 0x00
 
-    class BarcodeScannerSubcategory(OpenIntEnum):
+    class BarcodeScannerSubcategory(utils.OpenIntEnum):
         GENERIC_BARCODE_SCANNER = 0x00
 
-    class ThermometerSubcategory(OpenIntEnum):
+    class ThermometerSubcategory(utils.OpenIntEnum):
         GENERIC_THERMOMETER = 0x00
         EAR_THERMOMETER = 0x01
 
-    class HeartRateSensorSubcategory(OpenIntEnum):
+    class HeartRateSensorSubcategory(utils.OpenIntEnum):
         GENERIC_HEART_RATE_SENSOR = 0x00
         HEART_RATE_BELT = 0x01
 
-    class BloodPressureSubcategory(OpenIntEnum):
+    class BloodPressureSubcategory(utils.OpenIntEnum):
         GENERIC_BLOOD_PRESSURE = 0x00
         ARM_BLOOD_PRESSURE = 0x01
         WRIST_BLOOD_PRESSURE = 0x02
 
-    class HumanInterfaceDeviceSubcategory(OpenIntEnum):
+    class HumanInterfaceDeviceSubcategory(utils.OpenIntEnum):
         GENERIC_HUMAN_INTERFACE_DEVICE = 0x00
         KEYBOARD = 0x01
         MOUSE = 0x02
@@ -862,16 +863,16 @@ class Appearance:
         TOUCHPAD = 0x09
         PRESENTATION_REMOTE = 0x0A
 
-    class GlucoseMeterSubcategory(OpenIntEnum):
+    class GlucoseMeterSubcategory(utils.OpenIntEnum):
         GENERIC_GLUCOSE_METER = 0x00
 
-    class RunningWalkingSensorSubcategory(OpenIntEnum):
+    class RunningWalkingSensorSubcategory(utils.OpenIntEnum):
         GENERIC_RUNNING_WALKING_SENSOR = 0x00
         IN_SHOE_RUNNING_WALKING_SENSOR = 0x01
         ON_SHOW_RUNNING_WALKING_SENSOR = 0x02
         ON_HIP_RUNNING_WALKING_SENSOR = 0x03
 
-    class CyclingSubcategory(OpenIntEnum):
+    class CyclingSubcategory(utils.OpenIntEnum):
         GENERIC_CYCLING = 0x00
         CYCLING_COMPUTER = 0x01
         SPEED_SENSOR = 0x02
@@ -879,7 +880,7 @@ class Appearance:
         POWER_SENSOR = 0x04
         SPEED_AND_CADENCE_SENSOR = 0x05
 
-    class ControlDeviceSubcategory(OpenIntEnum):
+    class ControlDeviceSubcategory(utils.OpenIntEnum):
         GENERIC_CONTROL_DEVICE = 0x00
         SWITCH = 0x01
         MULTI_SWITCH = 0x02
@@ -894,13 +895,13 @@ class Appearance:
         ENERGY_HARVESTING_SWITCH = 0x0B
         PUSH_BUTTON = 0x0C
 
-    class NetworkDeviceSubcategory(OpenIntEnum):
+    class NetworkDeviceSubcategory(utils.OpenIntEnum):
         GENERIC_NETWORK_DEVICE = 0x00
         ACCESS_POINT = 0x01
         MESH_DEVICE = 0x02
         MESH_NETWORK_PROXY = 0x03
 
-    class SensorSubcategory(OpenIntEnum):
+    class SensorSubcategory(utils.OpenIntEnum):
         GENERIC_SENSOR = 0x00
         MOTION_SENSOR = 0x01
         AIR_QUALITY_SENSOR = 0x02
@@ -928,7 +929,7 @@ class Appearance:
         FLAME_DETECTOR = 0x18
         VEHICLE_TIRE_PRESSURE_SENSOR = 0x19
 
-    class LightFixturesSubcategory(OpenIntEnum):
+    class LightFixturesSubcategory(utils.OpenIntEnum):
         GENERIC_LIGHT_FIXTURES = 0x00
         WALL_LIGHT = 0x01
         CEILING_LIGHT = 0x02
@@ -956,7 +957,7 @@ class Appearance:
         LOW_BAY_LIGHT = 0x18
         HIGH_BAY_LIGHT = 0x19
 
-    class FanSubcategory(OpenIntEnum):
+    class FanSubcategory(utils.OpenIntEnum):
         GENERIC_FAN = 0x00
         CEILING_FAN = 0x01
         AXIAL_FAN = 0x02
@@ -965,7 +966,7 @@ class Appearance:
         DESK_FAN = 0x05
         WALL_FAN = 0x06
 
-    class HvacSubcategory(OpenIntEnum):
+    class HvacSubcategory(utils.OpenIntEnum):
         GENERIC_HVAC = 0x00
         THERMOSTAT = 0x01
         HUMIDIFIER = 0x02
@@ -979,13 +980,13 @@ class Appearance:
         FAN_HEATER = 0x0A
         AIR_CURTAIN = 0x0B
 
-    class AirConditioningSubcategory(OpenIntEnum):
+    class AirConditioningSubcategory(utils.OpenIntEnum):
         GENERIC_AIR_CONDITIONING = 0x00
 
-    class HumidifierSubcategory(OpenIntEnum):
+    class HumidifierSubcategory(utils.OpenIntEnum):
         GENERIC_HUMIDIFIER = 0x00
 
-    class HeatingSubcategory(OpenIntEnum):
+    class HeatingSubcategory(utils.OpenIntEnum):
         GENERIC_HEATING = 0x00
         RADIATOR = 0x01
         BOILER = 0x02
@@ -995,7 +996,7 @@ class Appearance:
         FAN_HEATER = 0x06
         AIR_CURTAIN = 0x07
 
-    class AccessControlSubcategory(OpenIntEnum):
+    class AccessControlSubcategory(utils.OpenIntEnum):
         GENERIC_ACCESS_CONTROL = 0x00
         ACCESS_DOOR = 0x01
         GARAGE_DOOR = 0x02
@@ -1007,7 +1008,7 @@ class Appearance:
         DOOR_LOCK = 0x08
         LOCKER = 0x09
 
-    class MotorizedDeviceSubcategory(OpenIntEnum):
+    class MotorizedDeviceSubcategory(utils.OpenIntEnum):
         GENERIC_MOTORIZED_DEVICE = 0x00
         MOTORIZED_GATE = 0x01
         AWNING = 0x02
@@ -1015,7 +1016,7 @@ class Appearance:
         CURTAINS = 0x04
         SCREEN = 0x05
 
-    class PowerDeviceSubcategory(OpenIntEnum):
+    class PowerDeviceSubcategory(utils.OpenIntEnum):
         GENERIC_POWER_DEVICE = 0x00
         POWER_OUTLET = 0x01
         POWER_STRIP = 0x02
@@ -1027,7 +1028,7 @@ class Appearance:
         CHARGE_CASE = 0x08
         POWER_BANK = 0x09
 
-    class LightSourceSubcategory(OpenIntEnum):
+    class LightSourceSubcategory(utils.OpenIntEnum):
         GENERIC_LIGHT_SOURCE = 0x00
         INCANDESCENT_LIGHT_BULB = 0x01
         LED_LAMP = 0x02
@@ -1038,7 +1039,7 @@ class Appearance:
         LOW_VOLTAGE_HALOGEN = 0x07
         ORGANIC_LIGHT_EMITTING_DIODE = 0x08
 
-    class WindowCoveringSubcategory(OpenIntEnum):
+    class WindowCoveringSubcategory(utils.OpenIntEnum):
         GENERIC_WINDOW_COVERING = 0x00
         WINDOW_SHADES = 0x01
         WINDOW_BLINDS = 0x02
@@ -1047,7 +1048,7 @@ class Appearance:
         EXTERIOR_SHUTTER = 0x05
         EXTERIOR_SCREEN = 0x06
 
-    class AudioSinkSubcategory(OpenIntEnum):
+    class AudioSinkSubcategory(utils.OpenIntEnum):
         GENERIC_AUDIO_SINK = 0x00
         STANDALONE_SPEAKER = 0x01
         SOUNDBAR = 0x02
@@ -1055,7 +1056,7 @@ class Appearance:
         STANDMOUNTED_SPEAKER = 0x04
         SPEAKERPHONE = 0x05
 
-    class AudioSourceSubcategory(OpenIntEnum):
+    class AudioSourceSubcategory(utils.OpenIntEnum):
         GENERIC_AUDIO_SOURCE = 0x00
         MICROPHONE = 0x01
         ALARM = 0x02
@@ -1067,7 +1068,7 @@ class Appearance:
         BROADCASTING_ROOM = 0x08
         AUDITORIUM = 0x09
 
-    class MotorizedVehicleSubcategory(OpenIntEnum):
+    class MotorizedVehicleSubcategory(utils.OpenIntEnum):
         GENERIC_MOTORIZED_VEHICLE = 0x00
         CAR = 0x01
         LARGE_GOODS_VEHICLE = 0x02
@@ -1085,7 +1086,7 @@ class Appearance:
         CAMPER_CARAVAN = 0x0E
         RECREATIONAL_VEHICLE_MOTOR_HOME = 0x0F
 
-    class DomesticApplianceSubcategory(OpenIntEnum):
+    class DomesticApplianceSubcategory(utils.OpenIntEnum):
         GENERIC_DOMESTIC_APPLIANCE = 0x00
         REFRIGERATOR = 0x01
         FREEZER = 0x02
@@ -1103,21 +1104,21 @@ class Appearance:
         RICE_COOKER = 0x0E
         CLOTHES_STEAMER = 0x0F
 
-    class WearableAudioDeviceSubcategory(OpenIntEnum):
+    class WearableAudioDeviceSubcategory(utils.OpenIntEnum):
         GENERIC_WEARABLE_AUDIO_DEVICE = 0x00
         EARBUD = 0x01
         HEADSET = 0x02
         HEADPHONES = 0x03
         NECK_BAND = 0x04
 
-    class AircraftSubcategory(OpenIntEnum):
+    class AircraftSubcategory(utils.OpenIntEnum):
         GENERIC_AIRCRAFT = 0x00
         LIGHT_AIRCRAFT = 0x01
         MICROLIGHT = 0x02
         PARAGLIDER = 0x03
         LARGE_PASSENGER_AIRCRAFT = 0x04
 
-    class AvEquipmentSubcategory(OpenIntEnum):
+    class AvEquipmentSubcategory(utils.OpenIntEnum):
         GENERIC_AV_EQUIPMENT = 0x00
         AMPLIFIER = 0x01
         RECEIVER = 0x02
@@ -1126,69 +1127,69 @@ class Appearance:
         TURNTABLE = 0x05
         CD_PLAYER = 0x06
         DVD_PLAYER = 0x07
-        BLUERAY_PLAYER = 0x08
+        BLURAY_PLAYER = 0x08
         OPTICAL_DISC_PLAYER = 0x09
         SET_TOP_BOX = 0x0A
 
-    class DisplayEquipmentSubcategory(OpenIntEnum):
+    class DisplayEquipmentSubcategory(utils.OpenIntEnum):
         GENERIC_DISPLAY_EQUIPMENT = 0x00
         TELEVISION = 0x01
         MONITOR = 0x02
         PROJECTOR = 0x03
 
-    class HearingAidSubcategory(OpenIntEnum):
+    class HearingAidSubcategory(utils.OpenIntEnum):
         GENERIC_HEARING_AID = 0x00
         IN_EAR_HEARING_AID = 0x01
         BEHIND_EAR_HEARING_AID = 0x02
         COCHLEAR_IMPLANT = 0x03
 
-    class GamingSubcategory(OpenIntEnum):
+    class GamingSubcategory(utils.OpenIntEnum):
         GENERIC_GAMING = 0x00
         HOME_VIDEO_GAME_CONSOLE = 0x01
         PORTABLE_HANDHELD_CONSOLE = 0x02
 
-    class SignageSubcategory(OpenIntEnum):
+    class SignageSubcategory(utils.OpenIntEnum):
         GENERIC_SIGNAGE = 0x00
         DIGITAL_SIGNAGE = 0x01
         ELECTRONIC_LABEL = 0x02
 
-    class PulseOximeterSubcategory(OpenIntEnum):
+    class PulseOximeterSubcategory(utils.OpenIntEnum):
         GENERIC_PULSE_OXIMETER = 0x00
         FINGERTIP_PULSE_OXIMETER = 0x01
         WRIST_WORN_PULSE_OXIMETER = 0x02
 
-    class WeightScaleSubcategory(OpenIntEnum):
+    class WeightScaleSubcategory(utils.OpenIntEnum):
         GENERIC_WEIGHT_SCALE = 0x00
 
-    class PersonalMobilityDeviceSubcategory(OpenIntEnum):
+    class PersonalMobilityDeviceSubcategory(utils.OpenIntEnum):
         GENERIC_PERSONAL_MOBILITY_DEVICE = 0x00
         POWERED_WHEELCHAIR = 0x01
         MOBILITY_SCOOTER = 0x02
 
-    class ContinuousGlucoseMonitorSubcategory(OpenIntEnum):
+    class ContinuousGlucoseMonitorSubcategory(utils.OpenIntEnum):
         GENERIC_CONTINUOUS_GLUCOSE_MONITOR = 0x00
 
-    class InsulinPumpSubcategory(OpenIntEnum):
+    class InsulinPumpSubcategory(utils.OpenIntEnum):
         GENERIC_INSULIN_PUMP = 0x00
         INSULIN_PUMP_DURABLE_PUMP = 0x01
         INSULIN_PUMP_PATCH_PUMP = 0x02
         INSULIN_PEN = 0x03
 
-    class MedicationDeliverySubcategory(OpenIntEnum):
+    class MedicationDeliverySubcategory(utils.OpenIntEnum):
         GENERIC_MEDICATION_DELIVERY = 0x00
 
-    class SpirometerSubcategory(OpenIntEnum):
+    class SpirometerSubcategory(utils.OpenIntEnum):
         GENERIC_SPIROMETER = 0x00
         HANDHELD_SPIROMETER = 0x01
 
-    class OutdoorSportsActivitySubcategory(OpenIntEnum):
+    class OutdoorSportsActivitySubcategory(utils.OpenIntEnum):
         GENERIC_OUTDOOR_SPORTS_ACTIVITY = 0x00
         LOCATION_DISPLAY = 0x01
         LOCATION_AND_NAVIGATION_DISPLAY = 0x02
         LOCATION_POD = 0x03
         LOCATION_AND_NAVIGATION_POD = 0x04
 
-    class _OpenSubcategory(OpenIntEnum):
+    class _OpenSubcategory(utils.OpenIntEnum):
         GENERIC = 0x00
 
     SUBCATEGORY_CLASSES = {
@@ -1280,13 +1281,13 @@ class Appearance:
 # Advertising Data
 # -----------------------------------------------------------------------------
 AdvertisingDataObject = Union[
-    List[UUID],
-    Tuple[UUID, bytes],
+    list[UUID],
+    tuple[UUID, bytes],
     bytes,
     str,
     int,
-    Tuple[int, int],
-    Tuple[int, bytes],
+    tuple[int, int],
+    tuple[int, bytes],
     Appearance,
 ]
 
@@ -1295,129 +1296,135 @@ class AdvertisingData:
     # fmt: off
     # pylint: disable=line-too-long
 
-    FLAGS                                            = 0x01
-    INCOMPLETE_LIST_OF_16_BIT_SERVICE_CLASS_UUIDS    = 0x02
-    COMPLETE_LIST_OF_16_BIT_SERVICE_CLASS_UUIDS      = 0x03
-    INCOMPLETE_LIST_OF_32_BIT_SERVICE_CLASS_UUIDS    = 0x04
-    COMPLETE_LIST_OF_32_BIT_SERVICE_CLASS_UUIDS      = 0x05
-    INCOMPLETE_LIST_OF_128_BIT_SERVICE_CLASS_UUIDS   = 0x06
-    COMPLETE_LIST_OF_128_BIT_SERVICE_CLASS_UUIDS     = 0x07
-    SHORTENED_LOCAL_NAME                             = 0x08
-    COMPLETE_LOCAL_NAME                              = 0x09
-    TX_POWER_LEVEL                                   = 0x0A
-    CLASS_OF_DEVICE                                  = 0x0D
-    SIMPLE_PAIRING_HASH_C                            = 0x0E
-    SIMPLE_PAIRING_HASH_C_192                        = 0x0E
-    SIMPLE_PAIRING_RANDOMIZER_R                      = 0x0F
-    SIMPLE_PAIRING_RANDOMIZER_R_192                  = 0x0F
-    DEVICE_ID                                        = 0x10
-    SECURITY_MANAGER_TK_VALUE                        = 0x10
-    SECURITY_MANAGER_OUT_OF_BAND_FLAGS               = 0x11
-    PERIPHERAL_CONNECTION_INTERVAL_RANGE             = 0x12
-    LIST_OF_16_BIT_SERVICE_SOLICITATION_UUIDS        = 0x14
-    LIST_OF_128_BIT_SERVICE_SOLICITATION_UUIDS       = 0x15
-    SERVICE_DATA                                     = 0x16
-    SERVICE_DATA_16_BIT_UUID                         = 0x16
-    PUBLIC_TARGET_ADDRESS                            = 0x17
-    RANDOM_TARGET_ADDRESS                            = 0x18
-    APPEARANCE                                       = 0x19
-    ADVERTISING_INTERVAL                             = 0x1A
-    LE_BLUETOOTH_DEVICE_ADDRESS                      = 0x1B
-    LE_ROLE                                          = 0x1C
-    SIMPLE_PAIRING_HASH_C_256                        = 0x1D
-    SIMPLE_PAIRING_RANDOMIZER_R_256                  = 0x1E
-    LIST_OF_32_BIT_SERVICE_SOLICITATION_UUIDS        = 0x1F
-    SERVICE_DATA_32_BIT_UUID                         = 0x20
-    SERVICE_DATA_128_BIT_UUID                        = 0x21
-    LE_SECURE_CONNECTIONS_CONFIRMATION_VALUE         = 0x22
-    LE_SECURE_CONNECTIONS_RANDOM_VALUE               = 0x23
-    URI                                              = 0x24
-    INDOOR_POSITIONING                               = 0x25
-    TRANSPORT_DISCOVERY_DATA                         = 0x26
-    LE_SUPPORTED_FEATURES                            = 0x27
-    CHANNEL_MAP_UPDATE_INDICATION                    = 0x28
-    PB_ADV                                           = 0x29
-    MESH_MESSAGE                                     = 0x2A
-    MESH_BEACON                                      = 0x2B
-    BIGINFO                                          = 0x2C
-    BROADCAST_CODE                                   = 0x2D
-    RESOLVABLE_SET_IDENTIFIER                        = 0x2E
-    ADVERTISING_INTERVAL_LONG                        = 0x2F
-    BROADCAST_NAME                                   = 0x30
-    ENCRYPTED_ADVERTISING_DATA                       = 0X31
-    PERIODIC_ADVERTISING_RESPONSE_TIMING_INFORMATION = 0X32
-    ELECTRONIC_SHELF_LABEL                           = 0X34
-    THREE_D_INFORMATION_DATA                         = 0x3D
-    MANUFACTURER_SPECIFIC_DATA                       = 0xFF
+    class Type(utils.OpenIntEnum):
+        FLAGS                                               = 0x01
+        INCOMPLETE_LIST_OF_16_BIT_SERVICE_CLASS_UUIDS       = 0x02
+        COMPLETE_LIST_OF_16_BIT_SERVICE_CLASS_UUIDS         = 0x03
+        INCOMPLETE_LIST_OF_32_BIT_SERVICE_CLASS_UUIDS       = 0x04
+        COMPLETE_LIST_OF_32_BIT_SERVICE_CLASS_UUIDS         = 0x05
+        INCOMPLETE_LIST_OF_128_BIT_SERVICE_CLASS_UUIDS      = 0x06
+        COMPLETE_LIST_OF_128_BIT_SERVICE_CLASS_UUIDS        = 0x07
+        SHORTENED_LOCAL_NAME                                = 0x08
+        COMPLETE_LOCAL_NAME                                 = 0x09
+        TX_POWER_LEVEL                                      = 0x0A
+        CLASS_OF_DEVICE                                     = 0x0D
+        SIMPLE_PAIRING_HASH_C                               = 0x0E
+        SIMPLE_PAIRING_HASH_C_192                           = 0x0E
+        SIMPLE_PAIRING_RANDOMIZER_R                         = 0x0F
+        SIMPLE_PAIRING_RANDOMIZER_R_192                     = 0x0F
+        DEVICE_ID                                           = 0x10
+        SECURITY_MANAGER_TK_VALUE                           = 0x10
+        SECURITY_MANAGER_OUT_OF_BAND_FLAGS                  = 0x11
+        PERIPHERAL_CONNECTION_INTERVAL_RANGE                = 0x12
+        LIST_OF_16_BIT_SERVICE_SOLICITATION_UUIDS           = 0x14
+        LIST_OF_128_BIT_SERVICE_SOLICITATION_UUIDS          = 0x15
+        SERVICE_DATA_16_BIT_UUID                            = 0x16
+        PUBLIC_TARGET_ADDRESS                               = 0x17
+        RANDOM_TARGET_ADDRESS                               = 0x18
+        APPEARANCE                                          = 0x19
+        ADVERTISING_INTERVAL                                = 0x1A
+        LE_BLUETOOTH_DEVICE_ADDRESS                         = 0x1B
+        LE_ROLE                                             = 0x1C
+        SIMPLE_PAIRING_HASH_C_256                           = 0x1D
+        SIMPLE_PAIRING_RANDOMIZER_R_256                     = 0x1E
+        LIST_OF_32_BIT_SERVICE_SOLICITATION_UUIDS           = 0x1F
+        SERVICE_DATA_32_BIT_UUID                            = 0x20
+        SERVICE_DATA_128_BIT_UUID                           = 0x21
+        LE_SECURE_CONNECTIONS_CONFIRMATION_VALUE            = 0x22
+        LE_SECURE_CONNECTIONS_RANDOM_VALUE                  = 0x23
+        URI                                                 = 0x24
+        INDOOR_POSITIONING                                  = 0x25
+        TRANSPORT_DISCOVERY_DATA                            = 0x26
+        LE_SUPPORTED_FEATURES                               = 0x27
+        CHANNEL_MAP_UPDATE_INDICATION                       = 0x28
+        PB_ADV                                              = 0x29
+        MESH_MESSAGE                                        = 0x2A
+        MESH_BEACON                                         = 0x2B
+        BIGINFO                                             = 0x2C
+        BROADCAST_CODE                                      = 0x2D
+        RESOLVABLE_SET_IDENTIFIER                           = 0x2E
+        ADVERTISING_INTERVAL_LONG                           = 0x2F
+        BROADCAST_NAME                                      = 0x30
+        ENCRYPTED_ADVERTISING_DATA                          = 0x31
+        PERIODIC_ADVERTISING_RESPONSE_TIMING_INFORMATION    = 0x32
+        ELECTRONIC_SHELF_LABEL                              = 0x34
+        THREE_D_INFORMATION_DATA                            = 0x3D
+        MANUFACTURER_SPECIFIC_DATA                          = 0xFF
 
-    AD_TYPE_NAMES = {
-        FLAGS:                                            'FLAGS',
-        INCOMPLETE_LIST_OF_16_BIT_SERVICE_CLASS_UUIDS:    'INCOMPLETE_LIST_OF_16_BIT_SERVICE_CLASS_UUIDS',
-        COMPLETE_LIST_OF_16_BIT_SERVICE_CLASS_UUIDS:      'COMPLETE_LIST_OF_16_BIT_SERVICE_CLASS_UUIDS',
-        INCOMPLETE_LIST_OF_32_BIT_SERVICE_CLASS_UUIDS:    'INCOMPLETE_LIST_OF_32_BIT_SERVICE_CLASS_UUIDS',
-        COMPLETE_LIST_OF_32_BIT_SERVICE_CLASS_UUIDS:      'COMPLETE_LIST_OF_32_BIT_SERVICE_CLASS_UUIDS',
-        INCOMPLETE_LIST_OF_128_BIT_SERVICE_CLASS_UUIDS:   'INCOMPLETE_LIST_OF_128_BIT_SERVICE_CLASS_UUIDS',
-        COMPLETE_LIST_OF_128_BIT_SERVICE_CLASS_UUIDS:     'COMPLETE_LIST_OF_128_BIT_SERVICE_CLASS_UUIDS',
-        SHORTENED_LOCAL_NAME:                             'SHORTENED_LOCAL_NAME',
-        COMPLETE_LOCAL_NAME:                              'COMPLETE_LOCAL_NAME',
-        TX_POWER_LEVEL:                                   'TX_POWER_LEVEL',
-        CLASS_OF_DEVICE:                                  'CLASS_OF_DEVICE',
-        SIMPLE_PAIRING_HASH_C:                            'SIMPLE_PAIRING_HASH_C',
-        SIMPLE_PAIRING_HASH_C_192:                        'SIMPLE_PAIRING_HASH_C_192',
-        SIMPLE_PAIRING_RANDOMIZER_R:                      'SIMPLE_PAIRING_RANDOMIZER_R',
-        SIMPLE_PAIRING_RANDOMIZER_R_192:                  'SIMPLE_PAIRING_RANDOMIZER_R_192',
-        DEVICE_ID:                                        'DEVICE_ID',
-        SECURITY_MANAGER_TK_VALUE:                        'SECURITY_MANAGER_TK_VALUE',
-        SECURITY_MANAGER_OUT_OF_BAND_FLAGS:               'SECURITY_MANAGER_OUT_OF_BAND_FLAGS',
-        PERIPHERAL_CONNECTION_INTERVAL_RANGE:             'PERIPHERAL_CONNECTION_INTERVAL_RANGE',
-        LIST_OF_16_BIT_SERVICE_SOLICITATION_UUIDS:        'LIST_OF_16_BIT_SERVICE_SOLICITATION_UUIDS',
-        LIST_OF_128_BIT_SERVICE_SOLICITATION_UUIDS:       'LIST_OF_128_BIT_SERVICE_SOLICITATION_UUIDS',
-        SERVICE_DATA_16_BIT_UUID:                         'SERVICE_DATA_16_BIT_UUID',
-        PUBLIC_TARGET_ADDRESS:                            'PUBLIC_TARGET_ADDRESS',
-        RANDOM_TARGET_ADDRESS:                            'RANDOM_TARGET_ADDRESS',
-        APPEARANCE:                                       'APPEARANCE',
-        ADVERTISING_INTERVAL:                             'ADVERTISING_INTERVAL',
-        LE_BLUETOOTH_DEVICE_ADDRESS:                      'LE_BLUETOOTH_DEVICE_ADDRESS',
-        LE_ROLE:                                          'LE_ROLE',
-        SIMPLE_PAIRING_HASH_C_256:                        'SIMPLE_PAIRING_HASH_C_256',
-        SIMPLE_PAIRING_RANDOMIZER_R_256:                  'SIMPLE_PAIRING_RANDOMIZER_R_256',
-        LIST_OF_32_BIT_SERVICE_SOLICITATION_UUIDS:        'LIST_OF_32_BIT_SERVICE_SOLICITATION_UUIDS',
-        SERVICE_DATA_32_BIT_UUID:                         'SERVICE_DATA_32_BIT_UUID',
-        SERVICE_DATA_128_BIT_UUID:                        'SERVICE_DATA_128_BIT_UUID',
-        LE_SECURE_CONNECTIONS_CONFIRMATION_VALUE:         'LE_SECURE_CONNECTIONS_CONFIRMATION_VALUE',
-        LE_SECURE_CONNECTIONS_RANDOM_VALUE:               'LE_SECURE_CONNECTIONS_RANDOM_VALUE',
-        URI:                                              'URI',
-        INDOOR_POSITIONING:                               'INDOOR_POSITIONING',
-        TRANSPORT_DISCOVERY_DATA:                         'TRANSPORT_DISCOVERY_DATA',
-        LE_SUPPORTED_FEATURES:                            'LE_SUPPORTED_FEATURES',
-        CHANNEL_MAP_UPDATE_INDICATION:                    'CHANNEL_MAP_UPDATE_INDICATION',
-        PB_ADV:                                           'PB_ADV',
-        MESH_MESSAGE:                                     'MESH_MESSAGE',
-        MESH_BEACON:                                      'MESH_BEACON',
-        BIGINFO:                                          'BIGINFO',
-        BROADCAST_CODE:                                   'BROADCAST_CODE',
-        RESOLVABLE_SET_IDENTIFIER:                        'RESOLVABLE_SET_IDENTIFIER',
-        ADVERTISING_INTERVAL_LONG:                        'ADVERTISING_INTERVAL_LONG',
-        BROADCAST_NAME:                                   'BROADCAST_NAME',
-        ENCRYPTED_ADVERTISING_DATA:                       'ENCRYPTED_ADVERTISING_DATA',
-        PERIODIC_ADVERTISING_RESPONSE_TIMING_INFORMATION: 'PERIODIC_ADVERTISING_RESPONSE_TIMING_INFORMATION',
-        ELECTRONIC_SHELF_LABEL:                           'ELECTRONIC_SHELF_LABEL',
-        THREE_D_INFORMATION_DATA:                         'THREE_D_INFORMATION_DATA',
-        MANUFACTURER_SPECIFIC_DATA:                       'MANUFACTURER_SPECIFIC_DATA'
-    }
+    class Flags(enum.IntFlag):
+        LE_LIMITED_DISCOVERABLE_MODE = 1 << 0
+        LE_GENERAL_DISCOVERABLE_MODE = 1 << 1
+        BR_EDR_NOT_SUPPORTED = 1 << 2
+        SIMULTANEOUS_LE_BR_EDR_CAPABLE = 1 << 3
 
-    LE_LIMITED_DISCOVERABLE_MODE_FLAG = 0x01
-    LE_GENERAL_DISCOVERABLE_MODE_FLAG = 0x02
-    BR_EDR_NOT_SUPPORTED_FLAG         = 0x04
-    BR_EDR_CONTROLLER_FLAG            = 0x08
-    BR_EDR_HOST_FLAG                  = 0x10
+    # For backward-compatibility
+    FLAGS                                            = Type.FLAGS
+    INCOMPLETE_LIST_OF_16_BIT_SERVICE_CLASS_UUIDS    = Type.INCOMPLETE_LIST_OF_16_BIT_SERVICE_CLASS_UUIDS
+    COMPLETE_LIST_OF_16_BIT_SERVICE_CLASS_UUIDS      = Type.COMPLETE_LIST_OF_16_BIT_SERVICE_CLASS_UUIDS
+    INCOMPLETE_LIST_OF_32_BIT_SERVICE_CLASS_UUIDS    = Type.INCOMPLETE_LIST_OF_32_BIT_SERVICE_CLASS_UUIDS
+    COMPLETE_LIST_OF_32_BIT_SERVICE_CLASS_UUIDS      = Type.COMPLETE_LIST_OF_32_BIT_SERVICE_CLASS_UUIDS
+    INCOMPLETE_LIST_OF_128_BIT_SERVICE_CLASS_UUIDS   = Type.INCOMPLETE_LIST_OF_128_BIT_SERVICE_CLASS_UUIDS
+    COMPLETE_LIST_OF_128_BIT_SERVICE_CLASS_UUIDS     = Type.COMPLETE_LIST_OF_128_BIT_SERVICE_CLASS_UUIDS
+    SHORTENED_LOCAL_NAME                             = Type.SHORTENED_LOCAL_NAME
+    COMPLETE_LOCAL_NAME                              = Type.COMPLETE_LOCAL_NAME
+    TX_POWER_LEVEL                                   = Type.TX_POWER_LEVEL
+    CLASS_OF_DEVICE                                  = Type.CLASS_OF_DEVICE
+    SIMPLE_PAIRING_HASH_C                            = Type.SIMPLE_PAIRING_HASH_C
+    SIMPLE_PAIRING_HASH_C_192                        = Type.SIMPLE_PAIRING_HASH_C_192
+    SIMPLE_PAIRING_RANDOMIZER_R                      = Type.SIMPLE_PAIRING_RANDOMIZER_R
+    SIMPLE_PAIRING_RANDOMIZER_R_192                  = Type.SIMPLE_PAIRING_RANDOMIZER_R_192
+    DEVICE_ID                                        = Type.DEVICE_ID
+    SECURITY_MANAGER_TK_VALUE                        = Type.SECURITY_MANAGER_TK_VALUE
+    SECURITY_MANAGER_OUT_OF_BAND_FLAGS               = Type.SECURITY_MANAGER_OUT_OF_BAND_FLAGS
+    PERIPHERAL_CONNECTION_INTERVAL_RANGE             = Type.PERIPHERAL_CONNECTION_INTERVAL_RANGE
+    LIST_OF_16_BIT_SERVICE_SOLICITATION_UUIDS        = Type.LIST_OF_16_BIT_SERVICE_SOLICITATION_UUIDS
+    LIST_OF_128_BIT_SERVICE_SOLICITATION_UUIDS       = Type.LIST_OF_128_BIT_SERVICE_SOLICITATION_UUIDS
+    SERVICE_DATA                                     = Type.SERVICE_DATA_16_BIT_UUID
+    SERVICE_DATA_16_BIT_UUID                         = Type.SERVICE_DATA_16_BIT_UUID
+    PUBLIC_TARGET_ADDRESS                            = Type.PUBLIC_TARGET_ADDRESS
+    RANDOM_TARGET_ADDRESS                            = Type.RANDOM_TARGET_ADDRESS
+    APPEARANCE                                       = Type.APPEARANCE
+    ADVERTISING_INTERVAL                             = Type.ADVERTISING_INTERVAL
+    LE_BLUETOOTH_DEVICE_ADDRESS                      = Type.LE_BLUETOOTH_DEVICE_ADDRESS
+    LE_ROLE                                          = Type.LE_ROLE
+    SIMPLE_PAIRING_HASH_C_256                        = Type.SIMPLE_PAIRING_HASH_C_256
+    SIMPLE_PAIRING_RANDOMIZER_R_256                  = Type.SIMPLE_PAIRING_RANDOMIZER_R_256
+    LIST_OF_32_BIT_SERVICE_SOLICITATION_UUIDS        = Type.LIST_OF_32_BIT_SERVICE_SOLICITATION_UUIDS
+    SERVICE_DATA_32_BIT_UUID                         = Type.SERVICE_DATA_32_BIT_UUID
+    SERVICE_DATA_128_BIT_UUID                        = Type.SERVICE_DATA_128_BIT_UUID
+    LE_SECURE_CONNECTIONS_CONFIRMATION_VALUE         = Type.LE_SECURE_CONNECTIONS_CONFIRMATION_VALUE
+    LE_SECURE_CONNECTIONS_RANDOM_VALUE               = Type.LE_SECURE_CONNECTIONS_RANDOM_VALUE
+    URI                                              = Type.URI
+    INDOOR_POSITIONING                               = Type.INDOOR_POSITIONING
+    TRANSPORT_DISCOVERY_DATA                         = Type.TRANSPORT_DISCOVERY_DATA
+    LE_SUPPORTED_FEATURES                            = Type.LE_SUPPORTED_FEATURES
+    CHANNEL_MAP_UPDATE_INDICATION                    = Type.CHANNEL_MAP_UPDATE_INDICATION
+    PB_ADV                                           = Type.PB_ADV
+    MESH_MESSAGE                                     = Type.MESH_MESSAGE
+    MESH_BEACON                                      = Type.MESH_BEACON
+    BIGINFO                                          = Type.BIGINFO
+    BROADCAST_CODE                                   = Type.BROADCAST_CODE
+    RESOLVABLE_SET_IDENTIFIER                        = Type.RESOLVABLE_SET_IDENTIFIER
+    ADVERTISING_INTERVAL_LONG                        = Type.ADVERTISING_INTERVAL_LONG
+    BROADCAST_NAME                                   = Type.BROADCAST_NAME
+    ENCRYPTED_ADVERTISING_DATA                       = Type.ENCRYPTED_ADVERTISING_DATA
+    PERIODIC_ADVERTISING_RESPONSE_TIMING_INFORMATION = Type.PERIODIC_ADVERTISING_RESPONSE_TIMING_INFORMATION
+    ELECTRONIC_SHELF_LABEL                           = Type.ELECTRONIC_SHELF_LABEL
+    THREE_D_INFORMATION_DATA                         = Type.THREE_D_INFORMATION_DATA
+    MANUFACTURER_SPECIFIC_DATA                       = Type.MANUFACTURER_SPECIFIC_DATA
 
-    ad_structures: List[Tuple[int, bytes]]
+    LE_LIMITED_DISCOVERABLE_MODE_FLAG = Flags.LE_LIMITED_DISCOVERABLE_MODE
+    LE_GENERAL_DISCOVERABLE_MODE_FLAG = Flags.LE_GENERAL_DISCOVERABLE_MODE
+    BR_EDR_NOT_SUPPORTED_FLAG         = Flags.BR_EDR_NOT_SUPPORTED
+    BR_EDR_CONTROLLER_FLAG            = Flags.SIMULTANEOUS_LE_BR_EDR_CAPABLE
+    BR_EDR_HOST_FLAG                  = 0x10 # Deprecated
+
+    ad_structures: list[tuple[int, bytes]]
 
     # fmt: on
     # pylint: enable=line-too-long
 
-    def __init__(self, ad_structures: Optional[List[Tuple[int, bytes]]] = None) -> None:
+    def __init__(self, ad_structures: Optional[list[tuple[int, bytes]]] = None) -> None:
         if ad_structures is None:
             ad_structures = []
         self.ad_structures = ad_structures[:]
@@ -1444,7 +1451,7 @@ class AdvertisingData:
         return ','.join(bit_flags_to_strings(flags, flag_names))
 
     @staticmethod
-    def uuid_list_to_objects(ad_data: bytes, uuid_size: int) -> List[UUID]:
+    def uuid_list_to_objects(ad_data: bytes, uuid_size: int) -> list[UUID]:
         uuids = []
         offset = 0
         while (offset + uuid_size) <= len(ad_data):
@@ -1461,8 +1468,8 @@ class AdvertisingData:
             ]
         )
 
-    @staticmethod
-    def ad_data_to_string(ad_type, ad_data):
+    @classmethod
+    def ad_data_to_string(cls, ad_type: int, ad_data: bytes) -> str:
         if ad_type == AdvertisingData.FLAGS:
             ad_type_str = 'Flags'
             ad_data_str = AdvertisingData.flags_to_string(ad_data[0], short=True)
@@ -1501,7 +1508,10 @@ class AdvertisingData:
             ad_data_str = f'"{ad_data.decode("utf-8")}"'
         elif ad_type == AdvertisingData.COMPLETE_LOCAL_NAME:
             ad_type_str = 'Complete Local Name'
-            ad_data_str = f'"{ad_data.decode("utf-8")}"'
+            try:
+                ad_data_str = f'"{ad_data.decode("utf-8")}"'
+            except UnicodeDecodeError:
+                ad_data_str = ad_data.hex()
         elif ad_type == AdvertisingData.TX_POWER_LEVEL:
             ad_type_str = 'TX Power Level'
             ad_data_str = str(ad_data[0])
@@ -1518,71 +1528,71 @@ class AdvertisingData:
             ad_type_str = 'Broadcast Name'
             ad_data_str = ad_data.decode('utf-8')
         else:
-            ad_type_str = AdvertisingData.AD_TYPE_NAMES.get(ad_type, f'0x{ad_type:02X}')
+            ad_type_str = AdvertisingData.Type(ad_type).name
             ad_data_str = ad_data.hex()
 
         return f'[{ad_type_str}]: {ad_data_str}'
 
     # pylint: disable=too-many-return-statements
-    @staticmethod
-    def ad_data_to_object(ad_type: int, ad_data: bytes) -> AdvertisingDataObject:
+    @classmethod
+    def ad_data_to_object(cls, ad_type: int, ad_data: bytes) -> AdvertisingDataObject:
         if ad_type in (
-            AdvertisingData.COMPLETE_LIST_OF_16_BIT_SERVICE_CLASS_UUIDS,
-            AdvertisingData.INCOMPLETE_LIST_OF_16_BIT_SERVICE_CLASS_UUIDS,
-            AdvertisingData.LIST_OF_16_BIT_SERVICE_SOLICITATION_UUIDS,
+            AdvertisingData.Type.COMPLETE_LIST_OF_16_BIT_SERVICE_CLASS_UUIDS,
+            AdvertisingData.Type.INCOMPLETE_LIST_OF_16_BIT_SERVICE_CLASS_UUIDS,
+            AdvertisingData.Type.LIST_OF_16_BIT_SERVICE_SOLICITATION_UUIDS,
         ):
             return AdvertisingData.uuid_list_to_objects(ad_data, 2)
 
         if ad_type in (
-            AdvertisingData.COMPLETE_LIST_OF_32_BIT_SERVICE_CLASS_UUIDS,
-            AdvertisingData.INCOMPLETE_LIST_OF_32_BIT_SERVICE_CLASS_UUIDS,
-            AdvertisingData.LIST_OF_32_BIT_SERVICE_SOLICITATION_UUIDS,
+            AdvertisingData.Type.COMPLETE_LIST_OF_32_BIT_SERVICE_CLASS_UUIDS,
+            AdvertisingData.Type.INCOMPLETE_LIST_OF_32_BIT_SERVICE_CLASS_UUIDS,
+            AdvertisingData.Type.LIST_OF_32_BIT_SERVICE_SOLICITATION_UUIDS,
         ):
             return AdvertisingData.uuid_list_to_objects(ad_data, 4)
 
         if ad_type in (
-            AdvertisingData.COMPLETE_LIST_OF_128_BIT_SERVICE_CLASS_UUIDS,
-            AdvertisingData.INCOMPLETE_LIST_OF_128_BIT_SERVICE_CLASS_UUIDS,
-            AdvertisingData.LIST_OF_128_BIT_SERVICE_SOLICITATION_UUIDS,
+            AdvertisingData.Type.COMPLETE_LIST_OF_128_BIT_SERVICE_CLASS_UUIDS,
+            AdvertisingData.Type.INCOMPLETE_LIST_OF_128_BIT_SERVICE_CLASS_UUIDS,
+            AdvertisingData.Type.LIST_OF_128_BIT_SERVICE_SOLICITATION_UUIDS,
         ):
             return AdvertisingData.uuid_list_to_objects(ad_data, 16)
 
-        if ad_type == AdvertisingData.SERVICE_DATA_16_BIT_UUID:
+        if ad_type == AdvertisingData.Type.SERVICE_DATA_16_BIT_UUID:
             return (UUID.from_bytes(ad_data[:2]), ad_data[2:])
 
-        if ad_type == AdvertisingData.SERVICE_DATA_32_BIT_UUID:
+        if ad_type == AdvertisingData.Type.SERVICE_DATA_32_BIT_UUID:
             return (UUID.from_bytes(ad_data[:4]), ad_data[4:])
 
-        if ad_type == AdvertisingData.SERVICE_DATA_128_BIT_UUID:
+        if ad_type == AdvertisingData.Type.SERVICE_DATA_128_BIT_UUID:
             return (UUID.from_bytes(ad_data[:16]), ad_data[16:])
 
         if ad_type in (
-            AdvertisingData.SHORTENED_LOCAL_NAME,
-            AdvertisingData.COMPLETE_LOCAL_NAME,
-            AdvertisingData.URI,
-            AdvertisingData.BROADCAST_NAME,
+            AdvertisingData.Type.SHORTENED_LOCAL_NAME,
+            AdvertisingData.Type.COMPLETE_LOCAL_NAME,
+            AdvertisingData.Type.URI,
+            AdvertisingData.Type.BROADCAST_NAME,
         ):
             return ad_data.decode("utf-8")
 
-        if ad_type in (AdvertisingData.TX_POWER_LEVEL, AdvertisingData.FLAGS):
+        if ad_type in (AdvertisingData.Type.TX_POWER_LEVEL, AdvertisingData.Type.FLAGS):
             return cast(int, struct.unpack('B', ad_data)[0])
 
-        if ad_type in (AdvertisingData.ADVERTISING_INTERVAL,):
+        if ad_type in (AdvertisingData.Type.ADVERTISING_INTERVAL,):
             return cast(int, struct.unpack('<H', ad_data)[0])
 
-        if ad_type == AdvertisingData.CLASS_OF_DEVICE:
+        if ad_type == AdvertisingData.Type.CLASS_OF_DEVICE:
             return cast(int, struct.unpack('<I', bytes([*ad_data, 0]))[0])
 
-        if ad_type == AdvertisingData.PERIPHERAL_CONNECTION_INTERVAL_RANGE:
-            return cast(Tuple[int, int], struct.unpack('<HH', ad_data))
+        if ad_type == AdvertisingData.Type.PERIPHERAL_CONNECTION_INTERVAL_RANGE:
+            return cast(tuple[int, int], struct.unpack('<HH', ad_data))
 
-        if ad_type == AdvertisingData.MANUFACTURER_SPECIFIC_DATA:
-            return (cast(int, struct.unpack_from('<H', ad_data, 0)[0]), ad_data[2:])
-
-        if ad_type == AdvertisingData.APPEARANCE:
+        if ad_type == AdvertisingData.Type.APPEARANCE:
             return Appearance.from_int(
                 cast(int, struct.unpack_from('<H', ad_data, 0)[0])
             )
+
+        if ad_type == AdvertisingData.Type.MANUFACTURER_SPECIFIC_DATA:
+            return (cast(int, struct.unpack_from('<H', ad_data, 0)[0]), ad_data[2:])
 
         return ad_data
 
@@ -1597,7 +1607,80 @@ class AdvertisingData:
                 self.ad_structures.append((ad_type, ad_data))
             offset += length
 
-    def get_all(self, type_id: int, raw: bool = False) -> List[AdvertisingDataObject]:
+    @overload
+    def get_all(
+        self,
+        type_id: Literal[
+            AdvertisingData.Type.COMPLETE_LIST_OF_16_BIT_SERVICE_CLASS_UUIDS,
+            AdvertisingData.Type.INCOMPLETE_LIST_OF_16_BIT_SERVICE_CLASS_UUIDS,
+            AdvertisingData.Type.LIST_OF_16_BIT_SERVICE_SOLICITATION_UUIDS,
+            AdvertisingData.Type.COMPLETE_LIST_OF_32_BIT_SERVICE_CLASS_UUIDS,
+            AdvertisingData.Type.INCOMPLETE_LIST_OF_32_BIT_SERVICE_CLASS_UUIDS,
+            AdvertisingData.Type.LIST_OF_32_BIT_SERVICE_SOLICITATION_UUIDS,
+            AdvertisingData.Type.COMPLETE_LIST_OF_128_BIT_SERVICE_CLASS_UUIDS,
+            AdvertisingData.Type.INCOMPLETE_LIST_OF_128_BIT_SERVICE_CLASS_UUIDS,
+            AdvertisingData.Type.LIST_OF_128_BIT_SERVICE_SOLICITATION_UUIDS,
+        ],
+        raw: Literal[False] = False,
+    ) -> list[list[UUID]]: ...
+    @overload
+    def get_all(
+        self,
+        type_id: Literal[
+            AdvertisingData.Type.SERVICE_DATA_16_BIT_UUID,
+            AdvertisingData.Type.SERVICE_DATA_32_BIT_UUID,
+            AdvertisingData.Type.SERVICE_DATA_128_BIT_UUID,
+        ],
+        raw: Literal[False] = False,
+    ) -> list[tuple[UUID, bytes]]: ...
+    @overload
+    def get_all(
+        self,
+        type_id: Literal[
+            AdvertisingData.Type.SHORTENED_LOCAL_NAME,
+            AdvertisingData.Type.COMPLETE_LOCAL_NAME,
+            AdvertisingData.Type.URI,
+            AdvertisingData.Type.BROADCAST_NAME,
+        ],
+        raw: Literal[False] = False,
+    ) -> list[str]: ...
+    @overload
+    def get_all(
+        self,
+        type_id: Literal[
+            AdvertisingData.Type.TX_POWER_LEVEL,
+            AdvertisingData.Type.FLAGS,
+            AdvertisingData.Type.ADVERTISING_INTERVAL,
+            AdvertisingData.Type.CLASS_OF_DEVICE,
+        ],
+        raw: Literal[False] = False,
+    ) -> list[int]: ...
+    @overload
+    def get_all(
+        self,
+        type_id: Literal[AdvertisingData.Type.PERIPHERAL_CONNECTION_INTERVAL_RANGE,],
+        raw: Literal[False] = False,
+    ) -> list[tuple[int, int]]: ...
+    @overload
+    def get_all(
+        self,
+        type_id: Literal[AdvertisingData.Type.MANUFACTURER_SPECIFIC_DATA,],
+        raw: Literal[False] = False,
+    ) -> list[tuple[int, bytes]]: ...
+    @overload
+    def get_all(
+        self,
+        type_id: Literal[AdvertisingData.Type.APPEARANCE,],
+        raw: Literal[False] = False,
+    ) -> list[Appearance]: ...
+    @overload
+    def get_all(self, type_id: int, raw: Literal[True]) -> list[bytes]: ...
+    @overload
+    def get_all(
+        self, type_id: int, raw: bool = False
+    ) -> list[AdvertisingDataObject]: ...
+
+    def get_all(self, type_id: int, raw: bool = False) -> list[AdvertisingDataObject]:  # type: ignore[misc]
         '''
         Get Advertising Data Structure(s) with a given type
 
@@ -1608,6 +1691,79 @@ class AdvertisingData:
             return ad_data if raw else self.ad_data_to_object(type_id, ad_data)
 
         return [process_ad_data(ad[1]) for ad in self.ad_structures if ad[0] == type_id]
+
+    @overload
+    def get(
+        self,
+        type_id: Literal[
+            AdvertisingData.Type.COMPLETE_LIST_OF_16_BIT_SERVICE_CLASS_UUIDS,
+            AdvertisingData.Type.INCOMPLETE_LIST_OF_16_BIT_SERVICE_CLASS_UUIDS,
+            AdvertisingData.Type.LIST_OF_16_BIT_SERVICE_SOLICITATION_UUIDS,
+            AdvertisingData.Type.COMPLETE_LIST_OF_32_BIT_SERVICE_CLASS_UUIDS,
+            AdvertisingData.Type.INCOMPLETE_LIST_OF_32_BIT_SERVICE_CLASS_UUIDS,
+            AdvertisingData.Type.LIST_OF_32_BIT_SERVICE_SOLICITATION_UUIDS,
+            AdvertisingData.Type.COMPLETE_LIST_OF_128_BIT_SERVICE_CLASS_UUIDS,
+            AdvertisingData.Type.INCOMPLETE_LIST_OF_128_BIT_SERVICE_CLASS_UUIDS,
+            AdvertisingData.Type.LIST_OF_128_BIT_SERVICE_SOLICITATION_UUIDS,
+        ],
+        raw: Literal[False] = False,
+    ) -> Optional[list[UUID]]: ...
+    @overload
+    def get(
+        self,
+        type_id: Literal[
+            AdvertisingData.Type.SERVICE_DATA_16_BIT_UUID,
+            AdvertisingData.Type.SERVICE_DATA_32_BIT_UUID,
+            AdvertisingData.Type.SERVICE_DATA_128_BIT_UUID,
+        ],
+        raw: Literal[False] = False,
+    ) -> Optional[tuple[UUID, bytes]]: ...
+    @overload
+    def get(
+        self,
+        type_id: Literal[
+            AdvertisingData.Type.SHORTENED_LOCAL_NAME,
+            AdvertisingData.Type.COMPLETE_LOCAL_NAME,
+            AdvertisingData.Type.URI,
+            AdvertisingData.Type.BROADCAST_NAME,
+        ],
+        raw: Literal[False] = False,
+    ) -> Optional[Optional[str]]: ...
+    @overload
+    def get(
+        self,
+        type_id: Literal[
+            AdvertisingData.Type.TX_POWER_LEVEL,
+            AdvertisingData.Type.FLAGS,
+            AdvertisingData.Type.ADVERTISING_INTERVAL,
+            AdvertisingData.Type.CLASS_OF_DEVICE,
+        ],
+        raw: Literal[False] = False,
+    ) -> Optional[int]: ...
+    @overload
+    def get(
+        self,
+        type_id: Literal[AdvertisingData.Type.PERIPHERAL_CONNECTION_INTERVAL_RANGE,],
+        raw: Literal[False] = False,
+    ) -> Optional[tuple[int, int]]: ...
+    @overload
+    def get(
+        self,
+        type_id: Literal[AdvertisingData.Type.MANUFACTURER_SPECIFIC_DATA,],
+        raw: Literal[False] = False,
+    ) -> Optional[tuple[int, bytes]]: ...
+    @overload
+    def get(
+        self,
+        type_id: Literal[AdvertisingData.Type.APPEARANCE,],
+        raw: Literal[False] = False,
+    ) -> Optional[Appearance]: ...
+    @overload
+    def get(self, type_id: int, raw: Literal[True]) -> Optional[bytes]: ...
+    @overload
+    def get(
+        self, type_id: int, raw: bool = False
+    ) -> Optional[AdvertisingDataObject]: ...
 
     def get(self, type_id: int, raw: bool = False) -> Optional[AdvertisingDataObject]:
         '''

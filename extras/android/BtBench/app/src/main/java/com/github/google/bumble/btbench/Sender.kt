@@ -16,12 +16,14 @@ package com.github.google.bumble.btbench
 
 import java.util.concurrent.Semaphore
 import java.util.logging.Logger
+import kotlin.time.Duration.Companion.milliseconds
 import kotlin.time.DurationUnit
 import kotlin.time.TimeSource
 
 private val Log = Logger.getLogger("btbench.sender")
 
-class Sender(private val viewModel: AppViewModel, private val packetIO: PacketIO) : PacketSink() {
+class Sender(private val viewModel: AppViewModel, private val packetIO: PacketIO) : IoClient,
+    PacketSink() {
     private var startTime: TimeSource.Monotonic.ValueTimeMark = TimeSource.Monotonic.markNow()
     private var bytesSent = 0
     private val done = Semaphore(0)
@@ -30,10 +32,12 @@ class Sender(private val viewModel: AppViewModel, private val packetIO: PacketIO
         packetIO.packetSink = this
     }
 
-    fun run() {
-        viewModel.packetsSent = 0
-        viewModel.packetsReceived = 0
-        viewModel.throughput = 0
+    override fun run() {
+        viewModel.clear()
+
+        Log.info("startup delay: ${viewModel.startupDelay}")
+        Thread.sleep(viewModel.startupDelay.toLong());
+        Log.info("running")
 
         Log.info("sending reset")
         packetIO.sendPacket(ResetPacket())
@@ -42,20 +46,32 @@ class Sender(private val viewModel: AppViewModel, private val packetIO: PacketIO
 
         val packetCount = viewModel.senderPacketCount
         val packetSize = viewModel.senderPacketSize
-        for (i in 0..<packetCount - 1) {
-            packetIO.sendPacket(SequencePacket(0, i, ByteArray(packetSize - 6)))
+        for (i in 0..<packetCount) {
+            var now = TimeSource.Monotonic.markNow()
+            if (viewModel.senderPacketInterval > 0) {
+                val targetTime = startTime + (i * viewModel.senderPacketInterval).milliseconds
+                val delay = targetTime - now
+                if (delay.isPositive()) {
+                    Log.info("sleeping ${delay.inWholeMilliseconds} ms")
+                    Thread.sleep(delay.inWholeMilliseconds)
+                }
+                now = TimeSource.Monotonic.markNow()
+            }
+            val flags = when (i) {
+                packetCount - 1 -> Packet.LAST_FLAG
+                else -> 0
+            }
+            packetIO.sendPacket(
+                SequencePacket(
+                    flags,
+                    i,
+                    (now - startTime).inWholeMicroseconds.toInt(),
+                    ByteArray(packetSize - 10)
+                )
+            )
             bytesSent += packetSize
             viewModel.packetsSent = i + 1
         }
-        packetIO.sendPacket(
-            SequencePacket(
-                Packet.LAST_FLAG,
-                packetCount - 1,
-                ByteArray(packetSize - 6)
-            )
-        )
-        bytesSent += packetSize
-        viewModel.packetsSent = packetCount
 
         // Wait for the ACK
         Log.info("waiting for ACK")
@@ -63,14 +79,14 @@ class Sender(private val viewModel: AppViewModel, private val packetIO: PacketIO
         Log.info("got ACK")
     }
 
-    fun abort() {
+    override fun abort() {
         done.release()
     }
 
     override fun onResetPacket() {
     }
 
-    override fun onAckPacket() {
+    override fun onAckPacket(packet: AckPacket) {
         Log.info("received ACK")
         val elapsed = TimeSource.Monotonic.markNow() - startTime
         val throughput = (bytesSent / elapsed.toDouble(DurationUnit.SECONDS)).toInt()

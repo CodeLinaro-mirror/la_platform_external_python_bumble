@@ -15,6 +15,7 @@
 # -----------------------------------------------------------------------------
 # Imports
 # -----------------------------------------------------------------------------
+import struct
 
 from bumble.hci import (
     HCI_DISCONNECT_COMMAND,
@@ -22,6 +23,7 @@ from bumble.hci import (
     HCI_LE_CODED_PHY_BIT,
     HCI_LE_READ_BUFFER_SIZE_COMMAND,
     HCI_RESET_COMMAND,
+    HCI_VENDOR_EVENT,
     HCI_SUCCESS,
     HCI_LE_CONNECTION_COMPLETE_EVENT,
     HCI_LE_ENHANCED_CONNECTION_COMPLETE_V2_EVENT,
@@ -67,6 +69,7 @@ from bumble.hci import (
     HCI_Read_Local_Version_Information_Command,
     HCI_Reset_Command,
     HCI_Set_Event_Mask_Command,
+    HCI_Vendor_Event,
 )
 
 
@@ -75,13 +78,13 @@ from bumble.hci import (
 
 
 def basic_check(x):
-    packet = x.to_bytes()
+    packet = bytes(x)
     print(packet.hex())
     parsed = HCI_Packet.from_bytes(packet)
     x_str = str(x)
     parsed_str = str(parsed)
     print(x_str)
-    parsed_bytes = parsed.to_bytes()
+    parsed_bytes = bytes(parsed)
     assert x_str == parsed_str
     assert packet == parsed_bytes
 
@@ -167,8 +170,8 @@ def test_HCI_Command_Complete_Event():
         command_opcode=HCI_LE_READ_BUFFER_SIZE_COMMAND,
         return_parameters=HCI_LE_Read_Buffer_Size_Command.create_return_parameters(
             status=0,
-            hc_le_acl_data_packet_length=1234,
-            hc_total_num_le_acl_data_packets=56,
+            le_acl_data_packet_length=1234,
+            total_num_le_acl_data_packets=56,
         ),
     )
     basic_check(event)
@@ -188,7 +191,7 @@ def test_HCI_Command_Complete_Event():
         return_parameters=bytes([7]),
     )
     basic_check(event)
-    event = HCI_Packet.from_bytes(event.to_bytes())
+    event = HCI_Packet.from_bytes(bytes(event))
     assert event.return_parameters == 7
 
     # With a simple status as an integer status
@@ -211,6 +214,41 @@ def test_HCI_Command_Status_Event():
 def test_HCI_Number_Of_Completed_Packets_Event():
     event = HCI_Number_Of_Completed_Packets_Event([(1, 2), (3, 4)])
     basic_check(event)
+
+
+# -----------------------------------------------------------------------------
+def test_HCI_Vendor_Event():
+    data = bytes.fromhex('01020304')
+    event = HCI_Vendor_Event(data=data)
+    event_bytes = bytes(event)
+    parsed = HCI_Packet.from_bytes(event_bytes)
+    assert isinstance(parsed, HCI_Vendor_Event)
+    assert parsed.data == data
+
+    class HCI_Custom_Event(HCI_Event):
+        def __init__(self, blabla):
+            super().__init__(HCI_VENDOR_EVENT, parameters=struct.pack("<I", blabla))
+            self.name = 'HCI_CUSTOM_EVENT'
+            self.blabla = blabla
+
+    def create_event(payload):
+        if payload[0] == 1:
+            return HCI_Custom_Event(blabla=struct.unpack('<I', payload)[0])
+        return None
+
+    HCI_Event.add_vendor_factory(create_event)
+    parsed = HCI_Packet.from_bytes(event_bytes)
+    assert isinstance(parsed, HCI_Custom_Event)
+    assert parsed.blabla == 0x04030201
+    event_bytes2 = event_bytes[:3] + bytes([7]) + event_bytes[4:]
+    parsed = HCI_Packet.from_bytes(event_bytes2)
+    assert not isinstance(parsed, HCI_Custom_Event)
+    assert isinstance(parsed, HCI_Vendor_Event)
+    HCI_Event.remove_vendor_factory(create_event)
+
+    parsed = HCI_Packet.from_bytes(event_bytes)
+    assert not isinstance(parsed, HCI_Custom_Event)
+    assert isinstance(parsed, HCI_Vendor_Event)
 
 
 # -----------------------------------------------------------------------------
@@ -562,7 +600,7 @@ def test_iso_data_packet():
         '6281bc77ed6a3206d984bcdabee6be831c699cb50e2'
     )
 
-    assert packet.to_bytes() == data
+    assert bytes(packet) == data
 
 
 # -----------------------------------------------------------------------------
@@ -576,6 +614,7 @@ def run_test_events():
     test_HCI_Command_Complete_Event()
     test_HCI_Command_Status_Event()
     test_HCI_Number_Of_Completed_Packets_Event()
+    test_HCI_Vendor_Event()
 
 
 # -----------------------------------------------------------------------------

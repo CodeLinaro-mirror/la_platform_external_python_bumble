@@ -20,11 +20,12 @@ from __future__ import annotations
 import dataclasses
 import logging
 import struct
-from typing import ClassVar, List, Optional, Sequence
+from typing import ClassVar, Optional, Sequence
 
 from bumble import core
 from bumble import device
 from bumble import gatt
+from bumble import gatt_adapters
 from bumble import gatt_client
 from bumble import hci
 from bumble import utils
@@ -52,7 +53,7 @@ def encode_subgroups(subgroups: Sequence[SubgroupInfo]) -> bytes:
     )
 
 
-def decode_subgroups(data: bytes) -> List[SubgroupInfo]:
+def decode_subgroups(data: bytes) -> list[SubgroupInfo]:
     num_subgroups = data[0]
     offset = 1
     subgroups = []
@@ -273,13 +274,10 @@ class BroadcastReceiveState:
     pa_sync_state: PeriodicAdvertisingSyncState
     big_encryption: BigEncryption
     bad_code: bytes
-    subgroups: List[SubgroupInfo]
+    subgroups: list[SubgroupInfo]
 
     @classmethod
-    def from_bytes(cls, data: bytes) -> Optional[BroadcastReceiveState]:
-        if not data:
-            return None
-
+    def from_bytes(cls, data: bytes) -> BroadcastReceiveState:
         source_id = data[0]
         _, source_address = hci.Address.parse_address_preceded_by_type(data, 2)
         source_adv_sid = data[8]
@@ -356,35 +354,28 @@ class BroadcastAudioScanService(gatt.TemplateService):
 class BroadcastAudioScanServiceProxy(gatt_client.ProfileServiceProxy):
     SERVICE_CLASS = BroadcastAudioScanService
 
-    broadcast_audio_scan_control_point: gatt_client.CharacteristicProxy
-    broadcast_receive_states: List[gatt.DelegatedCharacteristicAdapter]
+    broadcast_audio_scan_control_point: gatt_client.CharacteristicProxy[bytes]
+    broadcast_receive_states: list[
+        gatt_client.CharacteristicProxy[Optional[BroadcastReceiveState]]
+    ]
 
     def __init__(self, service_proxy: gatt_client.ServiceProxy):
         self.service_proxy = service_proxy
 
-        if not (
-            characteristics := service_proxy.get_characteristics_by_uuid(
+        self.broadcast_audio_scan_control_point = (
+            service_proxy.get_required_characteristic_by_uuid(
                 gatt.GATT_BROADCAST_AUDIO_SCAN_CONTROL_POINT_CHARACTERISTIC
             )
-        ):
-            raise gatt.InvalidServiceError(
-                "Broadcast Audio Scan Control Point characteristic not found"
-            )
-        self.broadcast_audio_scan_control_point = characteristics[0]
+        )
 
-        if not (
-            characteristics := service_proxy.get_characteristics_by_uuid(
+        self.broadcast_receive_states = [
+            gatt_adapters.DelegatedCharacteristicProxyAdapter(
+                characteristic,
+                decode=lambda x: BroadcastReceiveState.from_bytes(x) if x else None,
+            )
+            for characteristic in service_proxy.get_characteristics_by_uuid(
                 gatt.GATT_BROADCAST_RECEIVE_STATE_CHARACTERISTIC
             )
-        ):
-            raise gatt.InvalidServiceError(
-                "Broadcast Receive State characteristic not found"
-            )
-        self.broadcast_receive_states = [
-            gatt.DelegatedCharacteristicAdapter(
-                characteristic, decode=BroadcastReceiveState.from_bytes
-            )
-            for characteristic in characteristics
         ]
 
     async def send_control_point_operation(
