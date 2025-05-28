@@ -25,15 +25,35 @@ import java.util.UUID
 
 val DEFAULT_RFCOMM_UUID: UUID = UUID.fromString("E6D55659-C8B4-4B85-96BB-B1143AF6D3AE")
 const val DEFAULT_PEER_BLUETOOTH_ADDRESS = "AA:BB:CC:DD:EE:FF"
+const val DEFAULT_STARTUP_DELAY = 3000
 const val DEFAULT_SENDER_PACKET_COUNT = 100
-const val DEFAULT_SENDER_PACKET_SIZE = 1024
+const val DEFAULT_SENDER_PACKET_SIZE = 970 // 970 is a value that works well on Android.
+const val DEFAULT_SENDER_PACKET_INTERVAL = 0
 const val DEFAULT_PSM = 128
+
+const val L2CAP_CLIENT_MODE = "L2CAP Client"
+const val L2CAP_SERVER_MODE = "L2CAP Server"
+const val RFCOMM_CLIENT_MODE = "RFCOMM Client"
+const val RFCOMM_SERVER_MODE = "RFCOMM Server"
+const val GATT_CLIENT_MODE = "GATT Client"
+const val GATT_SERVER_MODE = "GATT Server"
+
+const val SEND_SCENARIO = "Send"
+const val RECEIVE_SCENARIO = "Receive"
+const val PING_SCENARIO = "Ping"
+const val PONG_SCENARIO = "Pong"
 
 class AppViewModel : ViewModel() {
     private var preferences: SharedPreferences? = null
+    var status by mutableStateOf("")
+    var lastError by mutableStateOf("")
+    var mode by mutableStateOf(RFCOMM_SERVER_MODE)
+    var scenario by mutableStateOf(RECEIVE_SCENARIO)
     var peerBluetoothAddress by mutableStateOf(DEFAULT_PEER_BLUETOOTH_ADDRESS)
+    var startupDelay by mutableIntStateOf(DEFAULT_STARTUP_DELAY)
     var l2capPsm by mutableIntStateOf(DEFAULT_PSM)
     var use2mPhy by mutableStateOf(true)
+    var connectionPriority by mutableStateOf("BALANCED")
     var mtu by mutableIntStateOf(0)
     var rxPhy by mutableIntStateOf(0)
     var txPhy by mutableIntStateOf(0)
@@ -41,9 +61,11 @@ class AppViewModel : ViewModel() {
     var senderPacketSizeSlider by mutableFloatStateOf(0.0F)
     var senderPacketCount by mutableIntStateOf(DEFAULT_SENDER_PACKET_COUNT)
     var senderPacketSize by mutableIntStateOf(DEFAULT_SENDER_PACKET_SIZE)
+    var senderPacketInterval by mutableIntStateOf(DEFAULT_SENDER_PACKET_INTERVAL)
     var packetsSent by mutableIntStateOf(0)
     var packetsReceived by mutableIntStateOf(0)
     var throughput by mutableIntStateOf(0)
+    var stats by mutableStateOf("")
     var running by mutableStateOf(false)
     var aborter: (() -> Unit)? = null
 
@@ -66,6 +88,26 @@ class AppViewModel : ViewModel() {
             senderPacketSize = savedSenderPacketSize
         }
         updateSenderPacketSizeSlider()
+
+        val savedSenderPacketInterval = preferences.getInt(SENDER_PACKET_INTERVAL_PREF_KEY, -1)
+        if (savedSenderPacketInterval != -1) {
+            senderPacketInterval = savedSenderPacketInterval
+        }
+
+        val savedMode = preferences.getString(MODE_PREF_KEY, null)
+        if (savedMode != null) {
+            mode = savedMode
+        }
+
+        val savedScenario = preferences.getString(SCENARIO_PREF_KEY, null)
+        if (savedScenario != null) {
+            scenario = savedScenario
+        }
+
+        val savedConnectionPriority = preferences.getString(CONNECTION_PRIORITY_PREF_KEY, null)
+        if (savedConnectionPriority != null) {
+            connectionPriority = savedConnectionPriority
+        }
     }
 
     fun updatePeerBluetoothAddress(peerBluetoothAddress: String) {
@@ -150,7 +192,6 @@ class AppViewModel : ViewModel() {
         } else if (senderPacketSizeSlider < 0.5F) {
             512
         } else if (senderPacketSizeSlider < 0.7F) {
-            // 970 is a value that works well on Android.
             970
         } else if (senderPacketSizeSlider < 0.9F) {
             2048
@@ -162,6 +203,50 @@ class AppViewModel : ViewModel() {
             putInt(SENDER_PACKET_SIZE_PREF_KEY, senderPacketSize)
             apply()
         }
+    }
+
+    fun updateSenderPacketInterval(senderPacketInterval: Int) {
+        this.senderPacketInterval = senderPacketInterval
+        with(preferences!!.edit()) {
+            putInt(SENDER_PACKET_INTERVAL_PREF_KEY, senderPacketInterval)
+            apply()
+        }
+    }
+
+    fun updateScenario(scenario: String) {
+        this.scenario = scenario
+        with(preferences!!.edit()) {
+            putString(SCENARIO_PREF_KEY, scenario)
+            apply()
+        }
+    }
+
+    fun updateMode(mode: String) {
+        this.mode = mode
+        with(preferences!!.edit()) {
+            putString(MODE_PREF_KEY, mode)
+            apply()
+        }
+    }
+
+    fun updateConnectionPriority(connectionPriority: String) {
+        this.connectionPriority = connectionPriority
+        with(preferences!!.edit()) {
+            putString(CONNECTION_PRIORITY_PREF_KEY, connectionPriority)
+            apply()
+        }
+    }
+
+    fun clear() {
+        status = ""
+        lastError = ""
+        mtu = 0
+        rxPhy = 0
+        txPhy = 0
+        packetsSent = 0
+        packetsReceived = 0
+        throughput = 0
+        stats = ""
     }
 
     fun abort() {

@@ -17,12 +17,10 @@
 # -----------------------------------------------------------------------------
 from __future__ import annotations
 import asyncio
-import struct
 import time
 import logging
 import enum
 import warnings
-from pyee import EventEmitter
 from typing import (
     Any,
     Awaitable,
@@ -39,24 +37,28 @@ from typing import (
     cast,
 )
 
-from .core import (
+
+from bumble.core import (
     BT_ADVANCED_AUDIO_DISTRIBUTION_SERVICE,
     InvalidStateError,
     ProtocolError,
     InvalidArgumentError,
     name_or_number,
 )
-from .a2dp import (
+from bumble.a2dp import (
     A2DP_CODEC_TYPE_NAMES,
     A2DP_MPEG_2_4_AAC_CODEC_TYPE,
     A2DP_NON_A2DP_CODEC_TYPE,
     A2DP_SBC_CODEC_TYPE,
+    A2DP_VENDOR_MEDIA_CODEC_INFORMATION_CLASSES,
     AacMediaCodecInformation,
     SbcMediaCodecInformation,
     VendorSpecificMediaCodecInformation,
 )
-from . import sdp, device, l2cap
-from .colors import color
+from bumble.rtp import MediaPacket
+from bumble import sdp, device, l2cap, utils
+from bumble.colors import color
+
 
 # -----------------------------------------------------------------------------
 # Logging
@@ -279,95 +281,6 @@ class RealtimeClock:
 
 
 # -----------------------------------------------------------------------------
-class MediaPacket:
-    @staticmethod
-    def from_bytes(data: bytes) -> MediaPacket:
-        version = (data[0] >> 6) & 0x03
-        padding = (data[0] >> 5) & 0x01
-        extension = (data[0] >> 4) & 0x01
-        csrc_count = data[0] & 0x0F
-        marker = (data[1] >> 7) & 0x01
-        payload_type = data[1] & 0x7F
-        sequence_number = struct.unpack_from('>H', data, 2)[0]
-        timestamp = struct.unpack_from('>I', data, 4)[0]
-        ssrc = struct.unpack_from('>I', data, 8)[0]
-        csrc_list = [
-            struct.unpack_from('>I', data, 12 + i)[0] for i in range(csrc_count)
-        ]
-        payload = data[12 + csrc_count * 4 :]
-
-        return MediaPacket(
-            version,
-            padding,
-            extension,
-            marker,
-            sequence_number,
-            timestamp,
-            ssrc,
-            csrc_list,
-            payload_type,
-            payload,
-        )
-
-    def __init__(
-        self,
-        version: int,
-        padding: int,
-        extension: int,
-        marker: int,
-        sequence_number: int,
-        timestamp: int,
-        ssrc: int,
-        csrc_list: List[int],
-        payload_type: int,
-        payload: bytes,
-    ) -> None:
-        self.version = version
-        self.padding = padding
-        self.extension = extension
-        self.marker = marker
-        self.sequence_number = sequence_number & 0xFFFF
-        self.timestamp = timestamp & 0xFFFFFFFF
-        self.ssrc = ssrc
-        self.csrc_list = csrc_list
-        self.payload_type = payload_type
-        self.payload = payload
-
-    def __bytes__(self) -> bytes:
-        header = bytes(
-            [
-                self.version << 6
-                | self.padding << 5
-                | self.extension << 4
-                | len(self.csrc_list),
-                self.marker << 7 | self.payload_type,
-            ]
-        ) + struct.pack(
-            '>HII',
-            self.sequence_number,
-            self.timestamp,
-            self.ssrc,
-        )
-        for csrc in self.csrc_list:
-            header += struct.pack('>I', csrc)
-        return header + self.payload
-
-    def __str__(self) -> str:
-        return (
-            f'RTP(v={self.version},'
-            f'p={self.padding},'
-            f'x={self.extension},'
-            f'm={self.marker},'
-            f'pt={self.payload_type},'
-            f'sn={self.sequence_number},'
-            f'ts={self.timestamp},'
-            f'ssrc={self.ssrc},'
-            f'csrcs={self.csrc_list},'
-            f'payload_size={len(self.payload)})'
-        )
-
-
-# -----------------------------------------------------------------------------
 class MediaPacketPump:
     pump_task: Optional[asyncio.Task]
 
@@ -377,6 +290,7 @@ class MediaPacketPump:
         self.packets = packets
         self.clock = clock
         self.pump_task = None
+        self.completed = asyncio.Event()
 
     async def start(self, rtp_channel: l2cap.ClassicChannel) -> None:
         async def pump_packets():
@@ -406,6 +320,8 @@ class MediaPacketPump:
                     )
             except asyncio.exceptions.CancelledError:
                 logger.debug('pump canceled')
+            finally:
+                self.completed.set()
 
         # Pump packets
         self.pump_task = asyncio.create_task(pump_packets())
@@ -416,6 +332,9 @@ class MediaPacketPump:
             self.pump_task.cancel()
             await self.pump_task
             self.pump_task = None
+
+    async def wait_for_completion(self) -> None:
+        await self.completed.wait()
 
 
 # -----------------------------------------------------------------------------
@@ -615,11 +534,25 @@ class MediaCodecCapabilities(ServiceCapabilities):
                 self.media_codec_information
             )
         elif self.media_codec_type == A2DP_NON_A2DP_CODEC_TYPE:
-            self.media_codec_information = (
+            vendor_media_codec_information = (
                 VendorSpecificMediaCodecInformation.from_bytes(
                     self.media_codec_information
                 )
             )
+            if (
+                vendor_class_map := A2DP_VENDOR_MEDIA_CODEC_INFORMATION_CLASSES.get(
+                    vendor_media_codec_information.vendor_id
+                )
+            ) and (
+                media_codec_information_class := vendor_class_map.get(
+                    vendor_media_codec_information.codec_id
+                )
+            ):
+                self.media_codec_information = media_codec_information_class.from_bytes(
+                    vendor_media_codec_information.value
+                )
+            else:
+                self.media_codec_information = vendor_media_codec_information
 
     def __init__(
         self,
@@ -963,7 +896,7 @@ class Set_Configuration_Reject(Message):
         self.service_category = self.payload[0]
         self.error_code = self.payload[1]
 
-    def __init__(self, service_category, error_code):
+    def __init__(self, error_code: int, service_category: int = 0) -> None:
         super().__init__(payload=bytes([service_category, error_code]))
         self.service_category = service_category
         self.error_code = error_code
@@ -1199,6 +1132,14 @@ class Security_Control_Command(Message):
     See Bluetooth AVDTP spec - 8.17.1 Security Control Command
     '''
 
+    def init_from_payload(self):
+        # pylint: disable=attribute-defined-outside-init
+        self.acp_seid = self.payload[0] >> 2
+        self.data = self.payload[1:]
+
+    def __str__(self) -> str:
+        return self.to_string([f'ACP_SEID: {self.acp_seid}', f'data:    {self.data}'])
+
 
 # -----------------------------------------------------------------------------
 @Message.subclass
@@ -1260,12 +1201,15 @@ class DelayReport_Reject(Simple_Reject):
 
 
 # -----------------------------------------------------------------------------
-class Protocol(EventEmitter):
+class Protocol(utils.EventEmitter):
     local_endpoints: List[LocalStreamEndPoint]
     remote_endpoints: Dict[int, DiscoveredStreamEndPoint]
     streams: Dict[int, Stream]
     transaction_results: List[Optional[asyncio.Future[Message]]]
     channel_connector: Callable[[], Awaitable[l2cap.ClassicChannel]]
+
+    EVENT_OPEN = "open"
+    EVENT_CLOSE = "close"
 
     class PacketType(enum.IntEnum):
         SINGLE_PACKET = 0
@@ -1306,8 +1250,8 @@ class Protocol(EventEmitter):
 
         # Register to receive PDUs from the channel
         l2cap_channel.sink = self.on_pdu
-        l2cap_channel.on('open', self.on_l2cap_channel_open)
-        l2cap_channel.on('close', self.on_l2cap_channel_close)
+        l2cap_channel.on(l2cap_channel.EVENT_OPEN, self.on_l2cap_channel_open)
+        l2cap_channel.on(l2cap_channel.EVENT_CLOSE, self.on_l2cap_channel_close)
 
     def get_local_endpoint_by_seid(self, seid: int) -> Optional[LocalStreamEndPoint]:
         if 0 < seid <= len(self.local_endpoints):
@@ -1316,10 +1260,20 @@ class Protocol(EventEmitter):
         return None
 
     def add_source(
-        self, codec_capabilities: MediaCodecCapabilities, packet_pump: MediaPacketPump
+        self,
+        codec_capabilities: MediaCodecCapabilities,
+        packet_pump: MediaPacketPump,
+        delay_reporting: bool = False,
     ) -> LocalSource:
         seid = len(self.local_endpoints) + 1
-        source = LocalSource(self, seid, codec_capabilities, packet_pump)
+        service_capabilities = (
+            [ServiceCapabilities(AVDTP_DELAY_REPORTING_SERVICE_CATEGORY)]
+            if delay_reporting
+            else []
+        )
+        source = LocalSource(
+            self, seid, codec_capabilities, service_capabilities, packet_pump
+        )
         self.local_endpoints.append(source)
 
         return source
@@ -1372,7 +1326,7 @@ class Protocol(EventEmitter):
         return self.remote_endpoints.values()
 
     def find_remote_sink_by_codec(
-        self, media_type: int, codec_type: int
+        self, media_type: int, codec_type: int, vendor_id: int = 0, codec_id: int = 0
     ) -> Optional[DiscoveredStreamEndPoint]:
         for endpoint in self.remote_endpoints.values():
             if (
@@ -1397,7 +1351,19 @@ class Protocol(EventEmitter):
                             codec_capabilities.media_type == AVDTP_AUDIO_MEDIA_TYPE
                             and codec_capabilities.media_codec_type == codec_type
                         ):
-                            has_codec = True
+                            if isinstance(
+                                codec_capabilities.media_codec_information,
+                                VendorSpecificMediaCodecInformation,
+                            ):
+                                if (
+                                    codec_capabilities.media_codec_information.vendor_id
+                                    == vendor_id
+                                    and codec_capabilities.media_codec_information.codec_id
+                                    == codec_id
+                                ):
+                                    has_codec = True
+                            else:
+                                has_codec = True
                 if has_media_transport and has_codec:
                     return endpoint
 
@@ -1455,20 +1421,20 @@ class Protocol(EventEmitter):
             self.transaction_results[transaction_label] = None
             self.transaction_semaphore.release()
 
-    def on_l2cap_connection(self, channel):
+    def on_l2cap_connection(self, channel: l2cap.ClassicChannel) -> None:
         # Forward the channel to the endpoint that's expecting it
         if self.channel_acceptor is None:
             logger.warning(color('!!! l2cap connection with no acceptor', 'red'))
             return
         self.channel_acceptor.on_l2cap_connection(channel)
 
-    def on_l2cap_channel_open(self):
+    def on_l2cap_channel_open(self) -> None:
         logger.debug(color('<<< L2CAP channel open', 'magenta'))
-        self.emit('open')
+        self.emit(self.EVENT_OPEN)
 
-    def on_l2cap_channel_close(self):
+    def on_l2cap_channel_close(self) -> None:
         logger.debug(color('<<< L2CAP channel close', 'magenta'))
-        self.emit('close')
+        self.emit(self.EVENT_CLOSE)
 
     def send_message(self, transaction_label: int, message: Message) -> None:
         logger.debug(
@@ -1586,28 +1552,34 @@ class Protocol(EventEmitter):
     async def abort(self, seid: int) -> Abort_Response:
         return await self.send_command(Abort_Command(seid))
 
-    def on_discover_command(self, _command):
+    def on_discover_command(self, command: Discover_Command) -> Optional[Message]:
         endpoint_infos = [
             EndPointInfo(endpoint.seid, 0, endpoint.media_type, endpoint.tsep)
             for endpoint in self.local_endpoints
         ]
         return Discover_Response(endpoint_infos)
 
-    def on_get_capabilities_command(self, command):
+    def on_get_capabilities_command(
+        self, command: Get_Capabilities_Command
+    ) -> Optional[Message]:
         endpoint = self.get_local_endpoint_by_seid(command.acp_seid)
         if endpoint is None:
             return Get_Capabilities_Reject(AVDTP_BAD_ACP_SEID_ERROR)
 
         return Get_Capabilities_Response(endpoint.capabilities)
 
-    def on_get_all_capabilities_command(self, command):
+    def on_get_all_capabilities_command(
+        self, command: Get_All_Capabilities_Command
+    ) -> Optional[Message]:
         endpoint = self.get_local_endpoint_by_seid(command.acp_seid)
         if endpoint is None:
             return Get_All_Capabilities_Reject(AVDTP_BAD_ACP_SEID_ERROR)
 
         return Get_All_Capabilities_Response(endpoint.capabilities)
 
-    def on_set_configuration_command(self, command):
+    def on_set_configuration_command(
+        self, command: Set_Configuration_Command
+    ) -> Optional[Message]:
         endpoint = self.get_local_endpoint_by_seid(command.acp_seid)
         if endpoint is None:
             return Set_Configuration_Reject(AVDTP_BAD_ACP_SEID_ERROR)
@@ -1623,7 +1595,9 @@ class Protocol(EventEmitter):
         result = stream.on_set_configuration_command(command.capabilities)
         return result or Set_Configuration_Response()
 
-    def on_get_configuration_command(self, command):
+    def on_get_configuration_command(
+        self, command: Get_Configuration_Command
+    ) -> Optional[Message]:
         endpoint = self.get_local_endpoint_by_seid(command.acp_seid)
         if endpoint is None:
             return Get_Configuration_Reject(AVDTP_BAD_ACP_SEID_ERROR)
@@ -1632,7 +1606,7 @@ class Protocol(EventEmitter):
 
         return endpoint.stream.on_get_configuration_command()
 
-    def on_reconfigure_command(self, command):
+    def on_reconfigure_command(self, command: Reconfigure_Command) -> Optional[Message]:
         endpoint = self.get_local_endpoint_by_seid(command.acp_seid)
         if endpoint is None:
             return Reconfigure_Reject(0, AVDTP_BAD_ACP_SEID_ERROR)
@@ -1642,7 +1616,7 @@ class Protocol(EventEmitter):
         result = endpoint.stream.on_reconfigure_command(command.capabilities)
         return result or Reconfigure_Response()
 
-    def on_open_command(self, command):
+    def on_open_command(self, command: Open_Command) -> Optional[Message]:
         endpoint = self.get_local_endpoint_by_seid(command.acp_seid)
         if endpoint is None:
             return Open_Reject(AVDTP_BAD_ACP_SEID_ERROR)
@@ -1652,25 +1626,26 @@ class Protocol(EventEmitter):
         result = endpoint.stream.on_open_command()
         return result or Open_Response()
 
-    def on_start_command(self, command):
+    def on_start_command(self, command: Start_Command) -> Optional[Message]:
         for seid in command.acp_seids:
             endpoint = self.get_local_endpoint_by_seid(seid)
             if endpoint is None:
                 return Start_Reject(seid, AVDTP_BAD_ACP_SEID_ERROR)
             if endpoint.stream is None:
-                return Start_Reject(AVDTP_BAD_STATE_ERROR)
+                return Start_Reject(seid, AVDTP_BAD_STATE_ERROR)
 
         # Start all streams
         # TODO: deal with partial failures
         for seid in command.acp_seids:
             endpoint = self.get_local_endpoint_by_seid(seid)
-            result = endpoint.stream.on_start_command()
-            if result is not None:
+            if not endpoint or not endpoint.stream:
+                raise InvalidStateError("Should already be checked!")
+            if (result := endpoint.stream.on_start_command()) is not None:
                 return result
 
         return Start_Response()
 
-    def on_suspend_command(self, command):
+    def on_suspend_command(self, command: Suspend_Command) -> Optional[Message]:
         for seid in command.acp_seids:
             endpoint = self.get_local_endpoint_by_seid(seid)
             if endpoint is None:
@@ -1682,13 +1657,14 @@ class Protocol(EventEmitter):
         # TODO: deal with partial failures
         for seid in command.acp_seids:
             endpoint = self.get_local_endpoint_by_seid(seid)
-            result = endpoint.stream.on_suspend_command()
-            if result is not None:
+            if not endpoint or not endpoint.stream:
+                raise InvalidStateError("Should already be checked!")
+            if (result := endpoint.stream.on_suspend_command()) is not None:
                 return result
 
         return Suspend_Response()
 
-    def on_close_command(self, command):
+    def on_close_command(self, command: Close_Command) -> Optional[Message]:
         endpoint = self.get_local_endpoint_by_seid(command.acp_seid)
         if endpoint is None:
             return Close_Reject(AVDTP_BAD_ACP_SEID_ERROR)
@@ -1698,7 +1674,7 @@ class Protocol(EventEmitter):
         result = endpoint.stream.on_close_command()
         return result or Close_Response()
 
-    def on_abort_command(self, command):
+    def on_abort_command(self, command: Abort_Command) -> Optional[Message]:
         endpoint = self.get_local_endpoint_by_seid(command.acp_seid)
         if endpoint is None or endpoint.stream is None:
             return Abort_Response()
@@ -1706,15 +1682,17 @@ class Protocol(EventEmitter):
         endpoint.stream.on_abort_command()
         return Abort_Response()
 
-    def on_security_control_command(self, command):
+    def on_security_control_command(
+        self, command: Security_Control_Command
+    ) -> Optional[Message]:
         endpoint = self.get_local_endpoint_by_seid(command.acp_seid)
         if endpoint is None:
             return Security_Control_Reject(AVDTP_BAD_ACP_SEID_ERROR)
 
-        result = endpoint.on_security_control_command(command.payload)
+        result = endpoint.on_security_control_command(command.data)
         return result or Security_Control_Response()
 
-    def on_delayreport_command(self, command):
+    def on_delayreport_command(self, command: DelayReport_Command) -> Optional[Message]:
         endpoint = self.get_local_endpoint_by_seid(command.acp_seid)
         if endpoint is None:
             return DelayReport_Reject(AVDTP_BAD_ACP_SEID_ERROR)
@@ -1724,8 +1702,10 @@ class Protocol(EventEmitter):
 
 
 # -----------------------------------------------------------------------------
-class Listener(EventEmitter):
+class Listener(utils.EventEmitter):
     servers: Dict[int, Protocol]
+
+    EVENT_CONNECTION = "connection"
 
     @staticmethod
     def create_registrar(device: device.Device):
@@ -1761,7 +1741,7 @@ class Listener(EventEmitter):
         l2cap_server = device.create_l2cap_server(
             spec=l2cap.ClassicChannelSpec(psm=AVDTP_PSM)
         )
-        l2cap_server.on('connection', listener.on_l2cap_connection)
+        l2cap_server.on(l2cap_server.EVENT_CONNECTION, listener.on_l2cap_connection)
         return listener
 
     def on_l2cap_connection(self, channel: l2cap.ClassicChannel) -> None:
@@ -1777,14 +1757,14 @@ class Listener(EventEmitter):
                 logger.debug('setting up new Protocol for the connection')
                 server = Protocol(channel, self.version)
                 self.set_server(channel.connection, server)
-                self.emit('connection', server)
+                self.emit(self.EVENT_CONNECTION, server)
 
             def on_channel_close():
                 logger.debug('removing Protocol for the connection')
                 self.remove_server(channel.connection)
 
-            channel.on('open', on_channel_open)
-            channel.on('close', on_channel_close)
+            channel.on(channel.EVENT_OPEN, on_channel_open)
+            channel.on(channel.EVENT_CLOSE, on_channel_close)
 
 
 # -----------------------------------------------------------------------------
@@ -1833,6 +1813,7 @@ class Stream:
         )
 
     async def start(self) -> None:
+        """[Source] Start streaming."""
         # Auto-open if needed
         if self.state == AVDTP_CONFIGURED_STATE:
             await self.open()
@@ -1849,6 +1830,7 @@ class Stream:
         self.change_state(AVDTP_STREAMING_STATE)
 
     async def stop(self) -> None:
+        """[Source] Stop streaming and transit to OPEN state."""
         if self.state != AVDTP_STREAMING_STATE:
             raise InvalidStateError('current state is not STREAMING')
 
@@ -1861,6 +1843,7 @@ class Stream:
         self.change_state(AVDTP_OPEN_STATE)
 
     async def close(self) -> None:
+        """[Source] Close channel and transit to IDLE state."""
         if self.state not in (AVDTP_OPEN_STATE, AVDTP_STREAMING_STATE):
             raise InvalidStateError('current state is not OPEN or STREAMING')
 
@@ -1892,7 +1875,7 @@ class Stream:
         self.change_state(AVDTP_CONFIGURED_STATE)
         return None
 
-    def on_get_configuration_command(self, configuration):
+    def on_get_configuration_command(self):
         if self.state not in (
             AVDTP_CONFIGURED_STATE,
             AVDTP_OPEN_STATE,
@@ -1900,7 +1883,7 @@ class Stream:
         ):
             return Get_Configuration_Reject(AVDTP_BAD_STATE_ERROR)
 
-        return self.local_endpoint.on_get_configuration_command(configuration)
+        return self.local_endpoint.on_get_configuration_command()
 
     def on_reconfigure_command(self, configuration):
         if self.state != AVDTP_OPEN_STATE:
@@ -1980,20 +1963,20 @@ class Stream:
             # Wait for the RTP channel to be closed
             self.change_state(AVDTP_ABORTING_STATE)
 
-    def on_l2cap_connection(self, channel):
+    def on_l2cap_connection(self, channel: l2cap.ClassicChannel) -> None:
         logger.debug(color('<<< stream channel connected', 'magenta'))
         self.rtp_channel = channel
-        channel.on('open', self.on_l2cap_channel_open)
-        channel.on('close', self.on_l2cap_channel_close)
+        channel.on(channel.EVENT_OPEN, self.on_l2cap_channel_open)
+        channel.on(channel.EVENT_CLOSE, self.on_l2cap_channel_close)
 
         # We don't need more channels
         self.protocol.channel_acceptor = None
 
-    def on_l2cap_channel_open(self):
+    def on_l2cap_channel_open(self) -> None:
         logger.debug(color('<<< stream channel open', 'magenta'))
         self.local_endpoint.on_rtp_channel_open()
 
-    def on_l2cap_channel_close(self):
+    def on_l2cap_channel_close(self) -> None:
         logger.debug(color('<<< stream channel closed', 'magenta'))
         self.local_endpoint.on_rtp_channel_close()
         self.local_endpoint.in_use = 0
@@ -2107,8 +2090,21 @@ class DiscoveredStreamEndPoint(StreamEndPoint, StreamEndPointProxy):
 
 
 # -----------------------------------------------------------------------------
-class LocalStreamEndPoint(StreamEndPoint, EventEmitter):
+class LocalStreamEndPoint(StreamEndPoint, utils.EventEmitter):
     stream: Optional[Stream]
+
+    EVENT_CONFIGURATION = "configuration"
+    EVENT_OPEN = "open"
+    EVENT_START = "start"
+    EVENT_STOP = "stop"
+    EVENT_RTP_PACKET = "rtp_packet"
+    EVENT_SUSPEND = "suspend"
+    EVENT_CLOSE = "close"
+    EVENT_ABORT = "abort"
+    EVENT_DELAY_REPORT = "delay_report"
+    EVENT_SECURITY_CONTROL = "security_control"
+    EVENT_RTP_CHANNEL_OPEN = "rtp_channel_open"
+    EVENT_RTP_CHANNEL_CLOSE = "rtp_channel_close"
 
     def __init__(
         self,
@@ -2120,57 +2116,70 @@ class LocalStreamEndPoint(StreamEndPoint, EventEmitter):
         configuration: Optional[Iterable[ServiceCapabilities]] = None,
     ):
         StreamEndPoint.__init__(self, seid, media_type, tsep, 0, capabilities)
-        EventEmitter.__init__(self)
+        utils.EventEmitter.__init__(self)
         self.protocol = protocol
         self.configuration = configuration if configuration is not None else []
         self.stream = None
 
-    async def start(self):
-        pass
+    async def start(self) -> None:
+        """[Source Only] Handles when receiving start command."""
 
-    async def stop(self):
-        pass
+    async def stop(self) -> None:
+        """[Source Only] Handles when receiving stop command."""
 
-    async def close(self):
-        pass
+    async def close(self) -> None:
+        """[Source Only] Handles when receiving close command."""
 
-    def on_reconfigure_command(self, command):
-        pass
+    def on_reconfigure_command(self, command) -> Optional[Message]:
+        return None
 
-    def on_set_configuration_command(self, configuration):
+    def on_set_configuration_command(self, configuration) -> Optional[Message]:
         logger.debug(
             '<<< received configuration: '
             f'{",".join([str(capability) for capability in configuration])}'
         )
         self.configuration = configuration
-        self.emit('configuration')
+        self.emit(self.EVENT_CONFIGURATION)
+        return None
 
-    def on_get_configuration_command(self):
+    def on_get_configuration_command(self) -> Optional[Message]:
         return Get_Configuration_Response(self.configuration)
 
-    def on_open_command(self):
-        self.emit('open')
+    def on_open_command(self) -> Optional[Message]:
+        self.emit(self.EVENT_OPEN)
+        return None
 
-    def on_start_command(self):
-        self.emit('start')
+    def on_start_command(self) -> Optional[Message]:
+        self.emit(self.EVENT_START)
+        return None
 
-    def on_suspend_command(self):
-        self.emit('suspend')
+    def on_suspend_command(self) -> Optional[Message]:
+        self.emit(self.EVENT_SUSPEND)
+        return None
 
-    def on_close_command(self):
-        self.emit('close')
+    def on_close_command(self) -> Optional[Message]:
+        self.emit(self.EVENT_CLOSE)
+        return None
 
-    def on_abort_command(self):
-        self.emit('abort')
+    def on_abort_command(self) -> Optional[Message]:
+        self.emit(self.EVENT_ABORT)
+        return None
 
-    def on_delayreport_command(self, delay: int):
-        self.emit('delay_report', delay)
+    def on_delayreport_command(self, delay: int) -> Optional[Message]:
+        self.emit(self.EVENT_DELAY_REPORT, delay)
+        return None
 
-    def on_rtp_channel_open(self):
-        self.emit('rtp_channel_open')
+    def on_security_control_command(self, data: bytes) -> Optional[Message]:
+        self.emit(self.EVENT_SECURITY_CONTROL, data)
+        return None
 
-    def on_rtp_channel_close(self):
-        self.emit('rtp_channel_close')
+    def on_rtp_channel_open(self) -> None:
+        self.emit(self.EVENT_RTP_CHANNEL_OPEN)
+        return None
+
+    def on_rtp_channel_close(self) -> None:
+        self.emit(self.EVENT_RTP_CHANNEL_CLOSE)
+        return None
 
 
 # -----------------------------------------------------------------------------
@@ -2180,12 +2189,13 @@ class LocalSource(LocalStreamEndPoint):
         protocol: Protocol,
         seid: int,
         codec_capabilities: MediaCodecCapabilities,
+        other_capabilitiles: Iterable[ServiceCapabilities],
         packet_pump: MediaPacketPump,
     ) -> None:
         capabilities = [
             ServiceCapabilities(AVDTP_MEDIA_TRANSPORT_SERVICE_CATEGORY),
             codec_capabilities,
-        ]
+        ] + list(other_capabilitiles)
         super().__init__(
             protocol,
             seid,
@@ -2200,13 +2210,13 @@ class LocalSource(LocalStreamEndPoint):
         if self.packet_pump and self.stream and self.stream.rtp_channel:
             return await self.packet_pump.start(self.stream.rtp_channel)
 
-        self.emit('start')
+        self.emit(self.EVENT_START)
 
     async def stop(self) -> None:
         if self.packet_pump:
             return await self.packet_pump.stop()
 
-        self.emit('stop')
+        self.emit(self.EVENT_STOP)
 
     def on_start_command(self):
         asyncio.create_task(self.start())
@@ -2247,4 +2257,4 @@ class LocalSink(LocalStreamEndPoint):
             f'{color("<<< RTP Packet:", "green")} '
             f'{rtp_packet} {rtp_packet.payload[:16].hex()}'
         )
-        self.emit('rtp_packet', rtp_packet)
+        self.emit(self.EVENT_RTP_PACKET, rtp_packet)

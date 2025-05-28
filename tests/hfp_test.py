@@ -61,7 +61,7 @@ def _default_hf_configuration() -> hfp.HfConfiguration:
 # -----------------------------------------------------------------------------
 def _default_hf_sdp_features() -> hfp.HfSdpFeature:
     return (
-        hfp.HfSdpFeature.WIDE_BAND
+        hfp.HfSdpFeature.WIDE_BAND_SPEECH
         | hfp.HfSdpFeature.THREE_WAY_CALLING
         | hfp.HfSdpFeature.CLI_PRESENTATION_CAPABILITY
     )
@@ -108,7 +108,7 @@ def _default_ag_configuration() -> hfp.AgConfiguration:
 # -----------------------------------------------------------------------------
 def _default_ag_sdp_features() -> hfp.AgSdpFeature:
     return (
-        hfp.AgSdpFeature.WIDE_BAND
+        hfp.AgSdpFeature.WIDE_BAND_SPEECH
         | hfp.AgSdpFeature.IN_BAND_RING_TONE_CAPABILITY
         | hfp.AgSdpFeature.THREE_WAY_CALLING
     )
@@ -522,7 +522,7 @@ async def test_sco_setup():
 
     connections = await asyncio.gather(
         devices[0].connect(
-            devices[1].public_address, transport=core.BT_BR_EDR_TRANSPORT
+            devices[1].public_address, transport=core.PhysicalTransport.BR_EDR
         ),
         devices[1].accept(devices[0].public_address),
     )
@@ -567,6 +567,37 @@ async def test_sco_setup():
 
     await sco_connections[0].disconnect()
     await asyncio.gather(*sco_disconnection_futures)
+
+
+# -----------------------------------------------------------------------------
+@pytest.mark.asyncio
+async def test_hf_batched_response(
+    hfp_connections: Tuple[hfp.HfProtocol, hfp.AgProtocol]
+):
+    hf, ag = hfp_connections
+
+    ag.dlc.write(b'\r\n+BIND: (1,2)\r\n\r\nOK\r\n')
+
+    await hf.execute_command("AT+BIND=?", response_type=hfp.AtResponseType.SINGLE)
+
+
+# -----------------------------------------------------------------------------
+@pytest.mark.asyncio
+async def test_ag_batched_commands(
+    hfp_connections: Tuple[hfp.HfProtocol, hfp.AgProtocol]
+):
+    hf, ag = hfp_connections
+
+    answer_future = asyncio.get_running_loop().create_future()
+    ag.on('answer', lambda: answer_future.set_result(None))
+
+    hang_up_future = asyncio.get_running_loop().create_future()
+    ag.on('hang_up', lambda: hang_up_future.set_result(None))
+
+    hf.dlc.write(b'ATA\rAT+CHUP\r')
+
+    await answer_future
+    await hang_up_future
 
 
 # -----------------------------------------------------------------------------

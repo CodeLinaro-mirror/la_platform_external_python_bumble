@@ -88,6 +88,11 @@ class AudioStatus(utils.OpenIntEnum):
 class AshaService(gatt.TemplateService):
     UUID = gatt.GATT_ASHA_SERVICE
 
+    EVENT_STARTED = "started"
+    EVENT_STOPPED = "stopped"
+    EVENT_DISCONNECTED = "disconnected"
+    EVENT_VOLUME_CHANGED = "volume_changed"
+
     audio_sink: Optional[Callable[[bytes], Any]]
     active_codec: Optional[Codec] = None
     audio_type: Optional[AudioType] = None
@@ -134,12 +139,14 @@ class AshaService(gatt.TemplateService):
             ),
         )
 
-        self.audio_control_point_characteristic = gatt.Characteristic(
-            gatt.GATT_ASHA_AUDIO_CONTROL_POINT_CHARACTERISTIC,
-            gatt.Characteristic.Properties.WRITE
-            | gatt.Characteristic.Properties.WRITE_WITHOUT_RESPONSE,
-            gatt.Characteristic.WRITEABLE,
-            gatt.CharacteristicValue(write=self._on_audio_control_point_write),
+        self.audio_control_point_characteristic: gatt.Characteristic[bytes] = (
+            gatt.Characteristic(
+                gatt.GATT_ASHA_AUDIO_CONTROL_POINT_CHARACTERISTIC,
+                gatt.Characteristic.Properties.WRITE
+                | gatt.Characteristic.Properties.WRITE_WITHOUT_RESPONSE,
+                gatt.Characteristic.WRITEABLE,
+                gatt.CharacteristicValue(write=self._on_audio_control_point_write),
+            )
         )
         self.audio_status_characteristic = gatt.Characteristic(
             gatt.GATT_ASHA_AUDIO_STATUS_CHARACTERISTIC,
@@ -147,7 +154,7 @@ class AshaService(gatt.TemplateService):
             gatt.Characteristic.READABLE,
             bytes([AudioStatus.OK]),
         )
-        self.volume_characteristic = gatt.Characteristic(
+        self.volume_characteristic: gatt.Characteristic[bytes] = gatt.Characteristic(
             gatt.GATT_ASHA_VOLUME_CHARACTERISTIC,
             gatt.Characteristic.Properties.WRITE_WITHOUT_RESPONSE,
             gatt.Characteristic.WRITEABLE,
@@ -166,13 +173,13 @@ class AshaService(gatt.TemplateService):
             struct.pack('<H', self.psm),
         )
 
-        characteristics = [
+        characteristics = (
             self.read_only_properties_characteristic,
             self.audio_control_point_characteristic,
             self.audio_status_characteristic,
             self.volume_characteristic,
             self.le_psm_out_characteristic,
-        ]
+        )
 
         super().__init__(characteristics)
 
@@ -193,7 +200,7 @@ class AshaService(gatt.TemplateService):
 
     # Handler for audio control commands
     async def _on_audio_control_point_write(
-        self, connection: Optional[Connection], value: bytes
+        self, connection: Connection, value: bytes
     ) -> None:
         _logger.debug(f'--- AUDIO CONTROL POINT Write:{value.hex()}')
         opcode = value[0]
@@ -209,14 +216,14 @@ class AshaService(gatt.TemplateService):
                 f'volume={self.volume}, '
                 f'other_state={self.other_state}'
             )
-            self.emit('started')
+            self.emit(self.EVENT_STARTED)
         elif opcode == OpCode.STOP:
             _logger.debug('### STOP')
             self.active_codec = None
             self.audio_type = None
             self.volume = None
             self.other_state = None
-            self.emit('stopped')
+            self.emit(self.EVENT_STOPPED)
         elif opcode == OpCode.STATUS:
             _logger.debug('### STATUS: %s', PeripheralStatus(value[1]).name)
 
@@ -229,7 +236,7 @@ class AshaService(gatt.TemplateService):
                 self.audio_type = None
                 self.volume = None
                 self.other_state = None
-                self.emit('disconnected')
+                self.emit(self.EVENT_DISCONNECTED)
 
             connection.once('disconnection', on_disconnection)
 
@@ -240,10 +247,10 @@ class AshaService(gatt.TemplateService):
             )
 
     # Handler for volume control
-    def _on_volume_write(self, connection: Optional[Connection], value: bytes) -> None:
+    def _on_volume_write(self, connection: Connection, value: bytes) -> None:
         _logger.debug(f'--- VOLUME Write:{value[0]}')
         self.volume = value[0]
-        self.emit('volume_changed')
+        self.emit(self.EVENT_VOLUME_CHANGED)
 
     # Register an L2CAP CoC server
     def _on_connection(self, channel: l2cap.LeCreditBasedChannel) -> None:
@@ -257,11 +264,11 @@ class AshaService(gatt.TemplateService):
 # -----------------------------------------------------------------------------
 class AshaServiceProxy(gatt_client.ProfileServiceProxy):
     SERVICE_CLASS = AshaService
-    read_only_properties_characteristic: gatt_client.CharacteristicProxy
-    audio_control_point_characteristic: gatt_client.CharacteristicProxy
-    audio_status_point_characteristic: gatt_client.CharacteristicProxy
-    volume_characteristic: gatt_client.CharacteristicProxy
-    psm_characteristic: gatt_client.CharacteristicProxy
+    read_only_properties_characteristic: gatt_client.CharacteristicProxy[bytes]
+    audio_control_point_characteristic: gatt_client.CharacteristicProxy[bytes]
+    audio_status_point_characteristic: gatt_client.CharacteristicProxy[bytes]
+    volume_characteristic: gatt_client.CharacteristicProxy[bytes]
+    psm_characteristic: gatt_client.CharacteristicProxy[bytes]
 
     def __init__(self, service_proxy: gatt_client.ServiceProxy) -> None:
         self.service_proxy = service_proxy
@@ -288,8 +295,8 @@ class AshaServiceProxy(gatt_client.ProfileServiceProxy):
                 'psm_characteristic',
             ),
         ):
-            if not (
-                characteristics := self.service_proxy.get_characteristics_by_uuid(uuid)
-            ):
-                raise gatt.InvalidServiceError(f"Missing {uuid} Characteristic")
-            setattr(self, attribute_name, characteristics[0])
+            setattr(
+                self,
+                attribute_name,
+                self.service_proxy.get_required_characteristic_by_uuid(uuid),
+            )

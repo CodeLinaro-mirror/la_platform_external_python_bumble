@@ -139,6 +139,7 @@ class PacketParser:
                         packet_type
                     ) or self.extended_packet_info.get(packet_type)
                     if self.packet_info is None:
+                        self.reset()
                         raise core.InvalidPacketError(
                             f'invalid packet type {packet_type}'
                         )
@@ -302,7 +303,10 @@ class ParserSource(BaseSource):
 # -----------------------------------------------------------------------------
 class StreamPacketSource(asyncio.Protocol, ParserSource):
     def data_received(self, data: bytes) -> None:
-        self.parser.feed_data(data)
+        try:
+            self.parser.feed_data(data)
+        except core.InvalidPacketError:
+            logger.warning("invalid packet, ignoring data")
 
 
 # -----------------------------------------------------------------------------
@@ -370,11 +374,13 @@ class PumpedPacketSource(ParserSource):
                     self.parser.feed_data(packet)
                 except asyncio.CancelledError:
                     logger.debug('source pump task done')
-                    self.terminated.set_result(None)
+                    if not self.terminated.done():
+                        self.terminated.set_result(None)
                     break
                 except Exception as error:
                     logger.warning(f'exception while waiting for packet: {error}')
-                    self.terminated.set_exception(error)
+                    if not self.terminated.done():
+                        self.terminated.set_exception(error)
                     break
 
         self.pump_task = asyncio.create_task(pump_packets())
