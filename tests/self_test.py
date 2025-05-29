@@ -24,7 +24,7 @@ import pytest
 from unittest.mock import AsyncMock, MagicMock, patch
 
 from bumble.controller import Controller
-from bumble.core import BT_BR_EDR_TRANSPORT, BT_PERIPHERAL_ROLE, BT_CENTRAL_ROLE
+from bumble.core import PhysicalTransport
 from bumble.link import LocalLink
 from bumble.device import Device, Peer
 from bumble.host import Host
@@ -39,6 +39,7 @@ from bumble.smp import (
 )
 from bumble.core import ProtocolError
 from bumble.keys import PairingKeys
+from bumble.hci import Role
 
 
 # -----------------------------------------------------------------------------
@@ -111,7 +112,7 @@ async def test_self_connection():
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
     'responder_role,',
-    (BT_CENTRAL_ROLE, BT_PERIPHERAL_ROLE),
+    (Role.CENTRAL, Role.PERIPHERAL),
 )
 async def test_self_classic_connection(responder_role):
     # Create two devices, each with a controller, attached to the same link
@@ -136,7 +137,7 @@ async def test_self_classic_connection(responder_role):
     # Connect the two devices
     await asyncio.gather(
         two_devices.devices[0].connect(
-            two_devices.devices[1].public_address, transport=BT_BR_EDR_TRANSPORT
+            two_devices.devices[1].public_address, transport=PhysicalTransport.BR_EDR
         ),
         two_devices.devices[1].accept(
             two_devices.devices[0].public_address, responder_role
@@ -240,7 +241,7 @@ async def test_self_gatt():
     result = await peer.discover_included_services(result[0])
     assert len(result) == 2
     # Service UUID is only present when the UUID is 16-bit Bluetooth UUID
-    assert result[1].uuid.to_bytes() == s3.uuid.to_bytes()
+    assert bytes(result[1].uuid) == bytes(s3.uuid)
 
 
 # -----------------------------------------------------------------------------
@@ -506,7 +507,7 @@ async def test_self_smp_over_classic():
     # Connect the two devices
     await asyncio.gather(
         two_devices.devices[0].connect(
-            two_devices.devices[1].public_address, transport=BT_BR_EDR_TRANSPORT
+            two_devices.devices[1].public_address, transport=PhysicalTransport.BR_EDR
         ),
         two_devices.devices[1].accept(two_devices.devices[0].public_address),
     )

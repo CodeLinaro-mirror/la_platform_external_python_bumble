@@ -80,7 +80,7 @@ impl Address {
     /// Creates a new [Address] object.
     pub fn new(address: &str, address_type: AddressType) -> PyResult<Self> {
         Python::with_gil(|py| {
-            PyModule::import(py, intern!(py, "bumble.device"))?
+            PyModule::import(py, intern!(py, "bumble.hci"))?
                 .getattr(intern!(py, "Address"))?
                 .call1((address, address_type))
                 .map(|any| Self(any.into()))
@@ -178,7 +178,11 @@ impl IntoPy<PyObject> for AddressType {
 
 impl<'source> FromPyObject<'source> for ErrorCode {
     fn extract(ob: &'source PyAny) -> PyResult<Self> {
-        ob.extract()
+        // Bumble represents error codes simply as a single-byte number (in Rust, u8)
+        let value: u8 = ob.extract()?;
+        ErrorCode::try_from(value).map_err(|b| {
+            PyErr::new::<PyException, _>(format!("Failed to map {b} to an error code"))
+        })
     }
 }
 

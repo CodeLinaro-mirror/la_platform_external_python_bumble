@@ -1,4 +1,4 @@
-# Copyright 2021-2023 Google LLC
+# Copyright 2021-2025 Google LLC
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -20,14 +20,14 @@ import enum
 from dataclasses import dataclass
 from typing import Optional, Tuple
 
-from .hci import (
+from bumble.hci import (
     Address,
     HCI_NO_INPUT_NO_OUTPUT_IO_CAPABILITY,
     HCI_DISPLAY_ONLY_IO_CAPABILITY,
     HCI_DISPLAY_YES_NO_IO_CAPABILITY,
     HCI_KEYBOARD_ONLY_IO_CAPABILITY,
 )
-from .smp import (
+from bumble.smp import (
     SMP_NO_INPUT_NO_OUTPUT_IO_CAPABILITY,
     SMP_KEYBOARD_ONLY_IO_CAPABILITY,
     SMP_DISPLAY_ONLY_IO_CAPABILITY,
@@ -41,7 +41,7 @@ from .smp import (
     OobLegacyContext,
     OobSharedData,
 )
-from .core import AdvertisingData, LeRole
+from bumble.core import AdvertisingData, LeRole
 
 
 # -----------------------------------------------------------------------------
@@ -76,18 +76,18 @@ class OobData:
         return instance
 
     def to_ad(self) -> AdvertisingData:
-        ad_structures = []
+        ad_structures: list[tuple[int, bytes]] = []
         if self.address is not None:
             ad_structures.append(
-                (AdvertisingData.LE_BLUETOOTH_DEVICE_ADDRESS, bytes(self.address))
+                (AdvertisingData.Type.LE_BLUETOOTH_DEVICE_ADDRESS, bytes(self.address))
             )
         if self.role is not None:
-            ad_structures.append((AdvertisingData.LE_ROLE, bytes([self.role])))
+            ad_structures.append((AdvertisingData.Type.LE_ROLE, bytes([self.role])))
         if self.shared_data is not None:
             ad_structures.extend(self.shared_data.to_ad().ad_structures)
         if self.legacy_context is not None:
             ad_structures.append(
-                (AdvertisingData.SECURITY_MANAGER_TK_VALUE, self.legacy_context.tk)
+                (AdvertisingData.Type.SECURITY_MANAGER_TK_VALUE, self.legacy_context.tk)
             )
 
         return AdvertisingData(ad_structures)
@@ -139,16 +139,19 @@ class PairingDelegate:
     io_capability: IoCapability
     local_initiator_key_distribution: KeyDistribution
     local_responder_key_distribution: KeyDistribution
+    maximum_encryption_key_size: int
 
     def __init__(
         self,
         io_capability: IoCapability = NO_OUTPUT_NO_INPUT,
         local_initiator_key_distribution: KeyDistribution = DEFAULT_KEY_DISTRIBUTION,
         local_responder_key_distribution: KeyDistribution = DEFAULT_KEY_DISTRIBUTION,
+        maximum_encryption_key_size: int = 16,
     ) -> None:
         self.io_capability = io_capability
         self.local_initiator_key_distribution = local_initiator_key_distribution
         self.local_responder_key_distribution = local_responder_key_distribution
+        self.maximum_encryption_key_size = maximum_encryption_key_size
 
     @property
     def classic_io_capability(self) -> int:

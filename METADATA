@@ -1,17 +1,20 @@
-name: "Bumble"
-description:
-    "Bumble is a full-featured Bluetooth stack written entirely in Python."
+# This project was upgraded with external_updater.
+# Usage: tools/external_updater/updater.sh update external/python/bumble
+# For more info, check https://cs.android.com/android/platform/superproject/main/+/main:tools/external_updater/README.md
 
+name: "Bumble"
+description: "Bumble is a full-featured Bluetooth stack written entirely in Python."
 third_party {
-  url {
-    type: HOMEPAGE
-    value: "https://google.github.io/bumble/"
-  }
-  url {
-    type: GIT
-    value: "https://github.com/google/bumble"
-  }
-  version: "737abdc481b226b16d85174d9ae0ebd9346b0fb4"
-  last_upgrade_date { year: 2024 month: 9 day: 17 }
   license_type: NOTICE
+  last_upgrade_date {
+    year: 2025
+    month: 5
+    day: 19
+  }
+  homepage: "https://google.github.io/bumble/"
+  identifier {
+    type: "Git"
+    value: "https://github.com/google/bumble"
+    version: "3b399ea1a2bc52f64e4f6317fad75fd1b5db3e8c"
+  }
 }

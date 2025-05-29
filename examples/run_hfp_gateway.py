@@ -21,16 +21,14 @@ import sys
 import os
 import io
 import logging
-import websockets
+from typing import Iterable, Optional
 
-from typing import Optional
+import websockets
 
 import bumble.core
 from bumble.device import Device, ScoLink
 from bumble.transport import open_transport_or_link
-from bumble.core import (
-    BT_BR_EDR_TRANSPORT,
-)
+from bumble.core import PhysicalTransport
 from bumble import hci, rfcomm, hfp
 
 
@@ -80,6 +78,10 @@ def on_speaker_volume(level: int):
 
 def on_microphone_volume(level: int):
     send_message(type='microphone_volume', level=level)
+
+
+def on_supported_audio_codecs(codecs: Iterable[hfp.AudioCodec]):
+    send_message(type='supported_audio_codecs', codecs=[codec.name for codec in codecs])
 
 
 def on_sco_state_change(codec: int):
@@ -207,6 +209,7 @@ async def main() -> None:
             ag_protocol = hfp.AgProtocol(dlc, configuration)
             ag_protocol.on('speaker_volume', on_speaker_volume)
             ag_protocol.on('microphone_volume', on_microphone_volume)
+            ag_protocol.on('supported_audio_codecs', on_supported_audio_codecs)
             on_hfp_state_change(True)
             dlc.multiplexer.l2cap_channel.on(
                 'close', lambda: on_hfp_state_change(False)
@@ -229,7 +232,7 @@ async def main() -> None:
             target_address = sys.argv[3]
             print(f'=== Connecting to {target_address}...')
             connection = await device.connect(
-                target_address, transport=BT_BR_EDR_TRANSPORT
+                target_address, transport=PhysicalTransport.BR_EDR
             )
             print(f'=== Connected to {connection.peer_address}!')
 
@@ -241,7 +244,7 @@ async def main() -> None:
             # Pick the first one
             channel, version, hf_sdp_features = hfp_record
             print(f'HF version: {version}')
-            print(f'HF features: {hf_sdp_features}')
+            print(f'HF features: {hf_sdp_features.name}')
 
             # Request authentication
             print('*** Authenticating...')
