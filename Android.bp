@@ -29,17 +29,3 @@ python_library_host {
         "pyee",
     ],
 }
-
-python_library_host {
-    name: "bumble-pandora",
-    srcs: [
-        "bumble/pandora/*.py",
-    ],
-    libs: [
-        "bumble",
-        "pandora-python",
-    ],
-    data: [
-        "bumble/pandora/py.typed",
-    ],
-}
