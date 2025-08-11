@@ -17,15 +17,14 @@
 # -----------------------------------------------------------------------------
 import asyncio
 import sys
-import os
-import logging
 
 from bumble.core import UUID
 from bumble.device import Device
-from bumble.transport import open_transport_or_link
+from bumble.transport import open_transport
 from bumble.rfcomm import Server
 from bumble.utils import AsyncRunner
 from bumble.rfcomm import make_service_sdp_records
+import bumble.logging
 
 
 # -----------------------------------------------------------------------------
@@ -124,7 +123,7 @@ async def main() -> None:
         uuid = 'E6D55659-C8B4-4B85-96BB-B1143AF6D3AE'
 
     print('<<< connecting to HCI...')
-    async with await open_transport_or_link(sys.argv[2]) as hci_transport:
+    async with await open_transport(sys.argv[2]) as hci_transport:
         print('<<< connected')
 
         # Create a device
@@ -159,5 +158,5 @@ async def main() -> None:
 
 
 # -----------------------------------------------------------------------------
-logging.basicConfig(level=os.environ.get('BUMBLE_LOGLEVEL', 'DEBUG').upper())
+bumble.logging.setup_basic_logging('DEBUG')
 asyncio.run(main())

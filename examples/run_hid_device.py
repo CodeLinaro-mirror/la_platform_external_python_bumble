@@ -17,14 +17,13 @@
 # -----------------------------------------------------------------------------
 import asyncio
 import sys
-import os
-import logging
 import json
-import websockets
 import struct
 
+import websockets
+
 from bumble.device import Device
-from bumble.transport import open_transport_or_link
+from bumble.transport import open_transport
 from bumble.core import (
     PhysicalTransport,
     BT_L2CAP_PROTOCOL_ID,
@@ -49,6 +48,8 @@ from bumble.sdp import (
     SDP_SERVICE_RECORD_HANDLE_ATTRIBUTE_ID,
     SDP_BROWSE_GROUP_LIST_ATTRIBUTE_ID,
 )
+import bumble.logging
+
 
 # -----------------------------------------------------------------------------
 # SDP attributes for Bluetooth HID devices
@@ -597,7 +598,7 @@ async def main() -> None:
         asyncio.create_task(handle_virtual_cable_unplug())
 
     print('<<< connecting to HCI...')
-    async with await open_transport_or_link(sys.argv[2]) as hci_transport:
+    async with await open_transport(sys.argv[2]) as hci_transport:
         print('<<< connected')
 
         # Create a device
@@ -744,5 +745,5 @@ async def main() -> None:
 
 
 # -----------------------------------------------------------------------------
-logging.basicConfig(level=os.environ.get('BUMBLE_LOGLEVEL', 'DEBUG').upper())
+bumble.logging.setup_basic_logging('DEBUG')
 asyncio.run(main())
