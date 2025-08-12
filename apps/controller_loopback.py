@@ -16,10 +16,11 @@
 # Imports
 # -----------------------------------------------------------------------------
 import asyncio
-import logging
-import os
 import time
 from typing import Optional
+
+import click
+
 from bumble.colors import color
 from bumble.hci import (
     HCI_READ_LOOPBACK_MODE_COMMAND,
@@ -29,8 +30,8 @@ from bumble.hci import (
     LoopbackMode,
 )
 from bumble.host import Host
-from bumble.transport import open_transport_or_link
-import click
+from bumble.transport import open_transport
+import bumble.logging
 
 
 class Loopback:
@@ -88,7 +89,7 @@ class Loopback:
     async def run(self):
         """Run a loopback throughput test"""
         print(color('>>> Connecting to HCI...', 'green'))
-        async with await open_transport_or_link(self.transport) as (
+        async with await open_transport(self.transport) as (
             hci_source,
             hci_sink,
         ):
@@ -194,8 +195,7 @@ class Loopback:
 )
 @click.argument('transport')
 def main(packet_size, packet_count, transport):
-    logging.basicConfig(level=os.environ.get('BUMBLE_LOGLEVEL', 'WARNING').upper())
-
+    bumble.logging.setup_basic_logging()
     loopback = Loopback(packet_size, packet_count, transport)
     asyncio.run(loopback.run())
 

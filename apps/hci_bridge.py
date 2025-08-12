@@ -17,11 +17,12 @@
 # -----------------------------------------------------------------------------
 import logging
 import asyncio
-import os
 import sys
 
 from bumble import hci, transport
 from bumble.bridge import HCI_Bridge
+import bumble.logging
+
 
 # -----------------------------------------------------------------------------
 # Logging
@@ -46,14 +47,14 @@ async def async_main():
         return
 
     print('>>> connecting to HCI...')
-    async with await transport.open_transport_or_link(sys.argv[1]) as (
+    async with await transport.open_transport(sys.argv[1]) as (
         hci_host_source,
         hci_host_sink,
     ):
         print('>>> connected')
 
         print('>>> connecting to HCI...')
-        async with await transport.open_transport_or_link(sys.argv[2]) as (
+        async with await transport.open_transport(sys.argv[2]) as (
             hci_controller_source,
             hci_controller_sink,
         ):
@@ -100,7 +101,7 @@ async def async_main():
 
 # -----------------------------------------------------------------------------
 def main():
-    logging.basicConfig(level=os.environ.get('BUMBLE_LOGLEVEL', 'INFO').upper())
+    bumble.logging.setup_basic_logging()
     asyncio.run(async_main())
 
 

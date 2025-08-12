@@ -28,7 +28,7 @@ import os
 import pathlib
 import platform
 import struct
-from typing import Any, Deque, Optional, TYPE_CHECKING
+from typing import Any, Optional, TYPE_CHECKING
 
 from bumble import core
 from bumble.drivers import common
@@ -90,54 +90,51 @@ HCI_INTEL_WRITE_BOOT_PARAMS_COMMAND = hci.hci_vendor_command_op_code(0x000E)
 hci.HCI_Command.register_commands(globals())
 
 
-@hci.HCI_Command.command(
-    fields=[
-        ("param0", 1),
-    ],
-    return_parameters_fields=[
+@hci.HCI_Command.command
+@dataclasses.dataclass
+class HCI_Intel_Read_Version_Command(hci.HCI_Command):
+    param0: int = dataclasses.field(metadata=hci.metadata(1))
+
+    return_parameters_fields = [
         ("status", hci.STATUS_SPEC),
         ("tlv", "*"),
-    ],
-)
-class HCI_Intel_Read_Version_Command(hci.HCI_Command):
-    pass
+    ]
 
 
-@hci.HCI_Command.command(
-    fields=[("data_type", 1), ("data", "*")],
-    return_parameters_fields=[
-        ("status", 1),
-    ],
-)
+@hci.HCI_Command.command
+@dataclasses.dataclass
 class Hci_Intel_Secure_Send_Command(hci.HCI_Command):
-    pass
+    data_type: int = dataclasses.field(metadata=hci.metadata(1))
+    data: bytes = dataclasses.field(metadata=hci.metadata("*"))
+
+    return_parameters_fields = [
+        ("status", 1),
+    ]
 
 
-@hci.HCI_Command.command(
-    fields=[
-        ("reset_type", 1),
-        ("patch_enable", 1),
-        ("ddc_reload", 1),
-        ("boot_option", 1),
-        ("boot_address", 4),
-    ],
-    return_parameters_fields=[
-        ("data", "*"),
-    ],
-)
+@hci.HCI_Command.command
+@dataclasses.dataclass
 class HCI_Intel_Reset_Command(hci.HCI_Command):
-    pass
+    reset_type: int = dataclasses.field(metadata=hci.metadata(1))
+    patch_enable: int = dataclasses.field(metadata=hci.metadata(1))
+    ddc_reload: int = dataclasses.field(metadata=hci.metadata(1))
+    boot_option: int = dataclasses.field(metadata=hci.metadata(1))
+    boot_address: int = dataclasses.field(metadata=hci.metadata(4))
+
+    return_parameters_fields = [
+        ("data", "*"),
+    ]
 
 
-@hci.HCI_Command.command(
-    fields=[("data", "*")],
-    return_parameters_fields=[
+@hci.HCI_Command.command
+@dataclasses.dataclass
+class Hci_Intel_Write_Device_Config_Command(hci.HCI_Command):
+    data: bytes = dataclasses.field(metadata=hci.metadata("*"))
+
+    return_parameters_fields = [
         ("status", hci.STATUS_SPEC),
         ("params", "*"),
-    ],
-)
-class Hci_Intel_Write_Device_Config_Command(hci.HCI_Command):
-    pass
+    ]
 
 
 # -----------------------------------------------------------------------------
@@ -348,7 +345,7 @@ class Driver(common.Driver):
     def __init__(self, host: Host) -> None:
         self.host = host
         self.max_in_flight_firmware_load_commands = 1
-        self.pending_firmware_load_commands: Deque[hci.HCI_Command] = (
+        self.pending_firmware_load_commands: collections.deque[hci.HCI_Command] = (
             collections.deque()
         )
         self.can_send_firmware_load_command = asyncio.Event()
