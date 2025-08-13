@@ -23,9 +23,13 @@ import pytest
 
 from unittest.mock import AsyncMock, MagicMock, patch
 
+from bumble.controller import Controller
 from bumble.core import PhysicalTransport
-from bumble.device import Peer
+from bumble.link import LocalLink
+from bumble.device import Device, Peer
+from bumble.host import Host
 from bumble.gatt import Service, Characteristic
+from bumble.transport import AsyncPipeSink
 from bumble.pairing import PairingConfig, PairingDelegate
 from bumble.smp import (
     SMP_PAIRING_NOT_SUPPORTED_ERROR,
@@ -34,9 +38,8 @@ from bumble.smp import (
     OobLegacyContext,
 )
 from bumble.core import ProtocolError
+from bumble.keys import PairingKeys
 from bumble.hci import Role
-
-from .test_utils import TwoDevices
 
 
 # -----------------------------------------------------------------------------
@@ -46,26 +49,63 @@ logger = logging.getLogger(__name__)
 
 
 # -----------------------------------------------------------------------------
-@pytest.mark.asyncio
-async def test_self_connection():
-    two_devices = TwoDevices()
-    await two_devices.setup_connection()
+class TwoDevices:
+    def __init__(self):
+        self.connections = [None, None]
+
+        addresses = ['F0:F1:F2:F3:F4:F5', 'F5:F4:F3:F2:F1:F0']
+        self.link = LocalLink()
+        self.controllers = [
+            Controller('C1', link=self.link, public_address=addresses[0]),
+            Controller('C2', link=self.link, public_address=addresses[1]),
+        ]
+        self.devices = [
+            Device(
+                address=addresses[0],
+                host=Host(self.controllers[0], AsyncPipeSink(self.controllers[0])),
+            ),
+            Device(
+                address=addresses[1],
+                host=Host(self.controllers[1], AsyncPipeSink(self.controllers[1])),
+            ),
+        ]
+
+        self.paired = [
+            asyncio.get_event_loop().create_future(),
+            asyncio.get_event_loop().create_future(),
+        ]
+
+    def on_connection(self, which, connection):
+        self.connections[which] = connection
+
+    def on_paired(self, which: int, keys: PairingKeys):
+        self.paired[which].set_result(keys)
 
 
 # -----------------------------------------------------------------------------
 @pytest.mark.asyncio
-async def test_self_disconnection():
+async def test_self_connection():
+    # Create two devices, each with a controller, attached to the same link
     two_devices = TwoDevices()
-    await two_devices.setup_connection()
-    await two_devices.connections[0].disconnect()
-    assert two_devices.connections[0] is None
-    assert two_devices.connections[1] is None
 
-    two_devices = TwoDevices()
-    await two_devices.setup_connection()
-    await two_devices.connections[1].disconnect()
-    assert two_devices.connections[0] is None
-    assert two_devices.connections[1] is None
+    # Attach listeners
+    two_devices.devices[0].on(
+        'connection', lambda connection: two_devices.on_connection(0, connection)
+    )
+    two_devices.devices[1].on(
+        'connection', lambda connection: two_devices.on_connection(1, connection)
+    )
+
+    # Start
+    await two_devices.devices[0].power_on()
+    await two_devices.devices[1].power_on()
+
+    # Connect the two devices
+    await two_devices.devices[0].connect(two_devices.devices[1].random_address)
+
+    # Check the post conditions
+    assert two_devices.connections[0] is not None
+    assert two_devices.connections[1] is not None
 
 
 # -----------------------------------------------------------------------------
@@ -75,14 +115,24 @@ async def test_self_disconnection():
     (Role.CENTRAL, Role.PERIPHERAL),
 )
 async def test_self_classic_connection(responder_role):
+    # Create two devices, each with a controller, attached to the same link
     two_devices = TwoDevices()
+
+    # Attach listeners
+    two_devices.devices[0].on(
+        'connection', lambda connection: two_devices.on_connection(0, connection)
+    )
+    two_devices.devices[1].on(
+        'connection', lambda connection: two_devices.on_connection(1, connection)
+    )
 
     # Enable Classic connections
     two_devices.devices[0].classic_enabled = True
     two_devices.devices[1].classic_enabled = True
 
     # Start
-    await two_devices.setup_connection()
+    await two_devices.devices[0].power_on()
+    await two_devices.devices[1].power_on()
 
     # Connect the two devices
     await asyncio.gather(
@@ -153,9 +203,15 @@ async def test_self_gatt():
     s4 = Service('3A12C182-14E2-4FE0-8C5B-65D7C569F9DB', [], included_services=[s2, s3])
     two_devices.devices[1].add_services([s1, s2, s4])
 
+    # Start
+    await two_devices.devices[0].power_on()
+    await two_devices.devices[1].power_on()
+
     # Connect the two devices
-    await two_devices.setup_connection()
-    peer = Peer(two_devices.connections[0])
+    connection = await two_devices.devices[0].connect(
+        two_devices.devices[1].random_address
+    )
+    peer = Peer(connection)
 
     bogus_uuid = 'A0AA6007-0B48-4BBE-80AC-0DE9AAF541EA'
     result = await peer.discover_services([bogus_uuid])
@@ -208,9 +264,15 @@ async def test_self_gatt_long_read():
     service = Service('8140E247-04F0-42C1-BC34-534C344DAFCA', characteristics)
     two_devices.devices[1].add_service(service)
 
+    # Start
+    await two_devices.devices[0].power_on()
+    await two_devices.devices[1].power_on()
+
     # Connect the two devices
-    await two_devices.setup_connection()
-    peer = Peer(two_devices.connections[0])
+    connection = await two_devices.devices[0].connect(
+        two_devices.devices[1].random_address
+    )
+    peer = Peer(connection)
 
     result = await peer.discover_service(service.uuid)
     assert len(result) == 1
@@ -227,12 +289,25 @@ async def _test_self_smp_with_configs(pairing_config1, pairing_config2):
     # Create two devices, each with a controller, attached to the same link
     two_devices = TwoDevices()
 
+    # Start
+    await two_devices.devices[0].power_on()
+    await two_devices.devices[1].power_on()
+
+    # Attach listeners
+    two_devices.devices[0].on(
+        'connection', lambda connection: two_devices.on_connection(0, connection)
+    )
+    two_devices.devices[1].on(
+        'connection', lambda connection: two_devices.on_connection(1, connection)
+    )
+
     # Connect the two devices
-    await two_devices.setup_connection()
-    connection = two_devices.connections[0]
+    connection = await two_devices.devices[0].connect(
+        two_devices.devices[1].random_address
+    )
     assert not connection.is_encrypted
 
-    # Attach pairing listeners
+    # Attach connection listeners
     two_devices.connections[0].on(
         'pairing', lambda keys: two_devices.on_paired(0, keys)
     )
@@ -322,9 +397,7 @@ async def test_self_smp(io_caps, sc, mitm, key_dist):
                 return 0
             else:
                 if (
-                    self.io_capability
-                    == PairingDelegate.IoCapability.KEYBOARD_INPUT_ONLY
-                    and self.peer_delegate.io_capability
+                    self.peer_delegate.io_capability
                     == PairingDelegate.IoCapability.KEYBOARD_INPUT_ONLY
                 ):
                     peer_number = 6789
@@ -415,13 +488,23 @@ async def test_self_smp_over_classic():
     # Create two devices, each with a controller, attached to the same link
     two_devices = TwoDevices()
 
+    # Attach listeners
+    two_devices.devices[0].on(
+        'connection', lambda connection: two_devices.on_connection(0, connection)
+    )
+    two_devices.devices[1].on(
+        'connection', lambda connection: two_devices.on_connection(1, connection)
+    )
+
     # Enable Classic connections
     two_devices.devices[0].classic_enabled = True
     two_devices.devices[1].classic_enabled = True
 
-    # Connect the two devices
+    # Start
     await two_devices.devices[0].power_on()
     await two_devices.devices[1].power_on()
+
+    # Connect the two devices
     await asyncio.gather(
         two_devices.devices[0].connect(
             two_devices.devices[1].public_address, transport=PhysicalTransport.BR_EDR
@@ -567,7 +650,6 @@ async def test_self_smp_oob_legacy():
 # -----------------------------------------------------------------------------
 async def run_test_self():
     await test_self_connection()
-    await test_self_disconnection()
     await test_self_gatt()
     await test_self_gatt_long_read()
     await test_self_smp()

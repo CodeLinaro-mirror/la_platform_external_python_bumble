@@ -24,19 +24,21 @@ import struct
 
 from collections import deque
 from typing import (
+    Dict,
+    Type,
+    List,
     Optional,
+    Tuple,
     Callable,
     Any,
     Union,
+    Deque,
     Iterable,
     SupportsBytes,
-    TypeVar,
-    ClassVar,
     TYPE_CHECKING,
 )
 
 from bumble import utils
-from bumble import hci
 from bumble.colors import color
 from bumble.core import (
     InvalidStateError,
@@ -44,6 +46,13 @@ from bumble.core import (
     InvalidPacketError,
     OutOfResourcesError,
     ProtocolError,
+)
+from bumble.hci import (
+    HCI_LE_Connection_Update_Command,
+    HCI_Object,
+    Role,
+    key_with_value,
+    name_or_number,
 )
 
 if TYPE_CHECKING:
@@ -89,29 +98,54 @@ L2CAP_PSM_DYNAMIC_RANGE_END   = 0xFFFF
 L2CAP_LE_PSM_DYNAMIC_RANGE_START = 0x0080
 L2CAP_LE_PSM_DYNAMIC_RANGE_END   = 0x00FF
 
-class CommandCode(hci.SpecableEnum):
-    L2CAP_COMMAND_REJECT                       = 0x01
-    L2CAP_CONNECTION_REQUEST                   = 0x02
-    L2CAP_CONNECTION_RESPONSE                  = 0x03
-    L2CAP_CONFIGURE_REQUEST                    = 0x04
-    L2CAP_CONFIGURE_RESPONSE                   = 0x05
-    L2CAP_DISCONNECTION_REQUEST                = 0x06
-    L2CAP_DISCONNECTION_RESPONSE               = 0x07
-    L2CAP_ECHO_REQUEST                         = 0x08
-    L2CAP_ECHO_RESPONSE                        = 0x09
-    L2CAP_INFORMATION_REQUEST                  = 0x0A
-    L2CAP_INFORMATION_RESPONSE                 = 0x0B
-    L2CAP_CREATE_CHANNEL_REQUEST               = 0x0C
-    L2CAP_CREATE_CHANNEL_RESPONSE              = 0x0D
-    L2CAP_MOVE_CHANNEL_REQUEST                 = 0x0E
-    L2CAP_MOVE_CHANNEL_RESPONSE                = 0x0F
-    L2CAP_MOVE_CHANNEL_CONFIRMATION            = 0x10
-    L2CAP_MOVE_CHANNEL_CONFIRMATION_RESPONSE   = 0x11
-    L2CAP_CONNECTION_PARAMETER_UPDATE_REQUEST  = 0x12
-    L2CAP_CONNECTION_PARAMETER_UPDATE_RESPONSE = 0x13
-    L2CAP_LE_CREDIT_BASED_CONNECTION_REQUEST   = 0x14
-    L2CAP_LE_CREDIT_BASED_CONNECTION_RESPONSE  = 0x15
-    L2CAP_LE_FLOW_CONTROL_CREDIT               = 0x16
+# Frame types
+L2CAP_COMMAND_REJECT                       = 0x01
+L2CAP_CONNECTION_REQUEST                   = 0x02
+L2CAP_CONNECTION_RESPONSE                  = 0x03
+L2CAP_CONFIGURE_REQUEST                    = 0x04
+L2CAP_CONFIGURE_RESPONSE                   = 0x05
+L2CAP_DISCONNECTION_REQUEST                = 0x06
+L2CAP_DISCONNECTION_RESPONSE               = 0x07
+L2CAP_ECHO_REQUEST                         = 0x08
+L2CAP_ECHO_RESPONSE                        = 0x09
+L2CAP_INFORMATION_REQUEST                  = 0x0A
+L2CAP_INFORMATION_RESPONSE                 = 0x0B
+L2CAP_CREATE_CHANNEL_REQUEST               = 0x0C
+L2CAP_CREATE_CHANNEL_RESPONSE              = 0x0D
+L2CAP_MOVE_CHANNEL_REQUEST                 = 0x0E
+L2CAP_MOVE_CHANNEL_RESPONSE                = 0x0F
+L2CAP_MOVE_CHANNEL_CONFIRMATION            = 0x10
+L2CAP_MOVE_CHANNEL_CONFIRMATION_RESPONSE   = 0x11
+L2CAP_CONNECTION_PARAMETER_UPDATE_REQUEST  = 0x12
+L2CAP_CONNECTION_PARAMETER_UPDATE_RESPONSE = 0x13
+L2CAP_LE_CREDIT_BASED_CONNECTION_REQUEST   = 0x14
+L2CAP_LE_CREDIT_BASED_CONNECTION_RESPONSE  = 0x15
+L2CAP_LE_FLOW_CONTROL_CREDIT               = 0x16
+
+L2CAP_CONTROL_FRAME_NAMES = {
+    L2CAP_COMMAND_REJECT:                       'L2CAP_COMMAND_REJECT',
+    L2CAP_CONNECTION_REQUEST:                   'L2CAP_CONNECTION_REQUEST',
+    L2CAP_CONNECTION_RESPONSE:                  'L2CAP_CONNECTION_RESPONSE',
+    L2CAP_CONFIGURE_REQUEST:                    'L2CAP_CONFIGURE_REQUEST',
+    L2CAP_CONFIGURE_RESPONSE:                   'L2CAP_CONFIGURE_RESPONSE',
+    L2CAP_DISCONNECTION_REQUEST:                'L2CAP_DISCONNECTION_REQUEST',
+    L2CAP_DISCONNECTION_RESPONSE:               'L2CAP_DISCONNECTION_RESPONSE',
+    L2CAP_ECHO_REQUEST:                         'L2CAP_ECHO_REQUEST',
+    L2CAP_ECHO_RESPONSE:                        'L2CAP_ECHO_RESPONSE',
+    L2CAP_INFORMATION_REQUEST:                  'L2CAP_INFORMATION_REQUEST',
+    L2CAP_INFORMATION_RESPONSE:                 'L2CAP_INFORMATION_RESPONSE',
+    L2CAP_CREATE_CHANNEL_REQUEST:               'L2CAP_CREATE_CHANNEL_REQUEST',
+    L2CAP_CREATE_CHANNEL_RESPONSE:              'L2CAP_CREATE_CHANNEL_RESPONSE',
+    L2CAP_MOVE_CHANNEL_REQUEST:                 'L2CAP_MOVE_CHANNEL_REQUEST',
+    L2CAP_MOVE_CHANNEL_RESPONSE:                'L2CAP_MOVE_CHANNEL_RESPONSE',
+    L2CAP_MOVE_CHANNEL_CONFIRMATION:            'L2CAP_MOVE_CHANNEL_CONFIRMATION',
+    L2CAP_MOVE_CHANNEL_CONFIRMATION_RESPONSE:   'L2CAP_MOVE_CHANNEL_CONFIRMATION_RESPONSE',
+    L2CAP_CONNECTION_PARAMETER_UPDATE_REQUEST:  'L2CAP_CONNECTION_PARAMETER_UPDATE_REQUEST',
+    L2CAP_CONNECTION_PARAMETER_UPDATE_RESPONSE: 'L2CAP_CONNECTION_PARAMETER_UPDATE_RESPONSE',
+    L2CAP_LE_CREDIT_BASED_CONNECTION_REQUEST:   'L2CAP_LE_CREDIT_BASED_CONNECTION_REQUEST',
+    L2CAP_LE_CREDIT_BASED_CONNECTION_RESPONSE:  'L2CAP_LE_CREDIT_BASED_CONNECTION_RESPONSE',
+    L2CAP_LE_FLOW_CONTROL_CREDIT:               'L2CAP_LE_FLOW_CONTROL_CREDIT'
+}
 
 L2CAP_CONNECTION_PARAMETERS_ACCEPTED_RESULT = 0x0000
 L2CAP_CONNECTION_PARAMETERS_REJECTED_RESULT = 0x0001
@@ -203,48 +237,46 @@ class L2CAP_PDU:
 
 
 # -----------------------------------------------------------------------------
-@dataclasses.dataclass
 class L2CAP_Control_Frame:
     '''
     See Bluetooth spec @ Vol 3, Part A - 4 SIGNALING PACKET FORMATS
     '''
 
-    classes: ClassVar[dict[int, type[L2CAP_Control_Frame]]] = {}
-    fields: ClassVar[hci.Fields] = ()
-    code: int = dataclasses.field(default=0, init=False)
-    name: str = dataclasses.field(default='', init=False)
-    _payload: Optional[bytes] = dataclasses.field(default=None, init=False)
+    classes: Dict[int, Type[L2CAP_Control_Frame]] = {}
+    code = 0
+    name: str
 
-    identifier: int
+    @staticmethod
+    def from_bytes(pdu: bytes) -> L2CAP_Control_Frame:
+        code = pdu[0]
 
-    @classmethod
-    def from_bytes(cls, pdu: bytes) -> L2CAP_Control_Frame:
-        code, identifier, length = struct.unpack_from("<BBH", pdu)
-
-        subclass = L2CAP_Control_Frame.classes.get(code)
-        if subclass is None:
-            instance = L2CAP_Control_Frame(identifier=identifier)
-            instance.payload = pdu[4:]
-            instance.code = CommandCode(code)
-            instance.name = instance.code.name
+        cls = L2CAP_Control_Frame.classes.get(code)
+        if cls is None:
+            instance = L2CAP_Control_Frame(pdu)
+            instance.name = L2CAP_Control_Frame.code_name(code)
+            instance.code = code
             return instance
-        frame = subclass(
-            **hci.HCI_Object.dict_from_bytes(pdu, 4, subclass.fields),
-            identifier=identifier,
-        )
-        frame.identifier = identifier
-        frame.payload = pdu[4:]
-        if length != len(frame.payload):
+        self = cls.__new__(cls)
+        L2CAP_Control_Frame.__init__(self, pdu)
+        self.identifier = pdu[1]
+        length = struct.unpack_from('<H', pdu, 2)[0]
+        if length + 4 != len(pdu):
             logger.warning(
                 color(
-                    f'!!! length mismatch: expected {length} but got {len(frame.payload)}',
+                    f'!!! length mismatch: expected {len(pdu) - 4} but got {length}',
                     'red',
                 )
             )
-        return frame
+        if hasattr(self, 'fields'):
+            self.init_from_bytes(pdu, 4)
+        return self
 
     @staticmethod
-    def decode_configuration_options(data: bytes) -> list[tuple[int, bytes]]:
+    def code_name(code: int) -> str:
+        return name_or_number(L2CAP_CONTROL_FRAME_NAMES, code)
+
+    @staticmethod
+    def decode_configuration_options(data: bytes) -> List[Tuple[int, bytes]]:
         options = []
         while len(data) >= 2:
             value_type = data[0]
@@ -256,77 +288,119 @@ class L2CAP_Control_Frame:
         return options
 
     @staticmethod
-    def encode_configuration_options(options: list[tuple[int, bytes]]) -> bytes:
+    def encode_configuration_options(options: List[Tuple[int, bytes]]) -> bytes:
         return b''.join(
             [bytes([option[0], len(option[1])]) + option[1] for option in options]
         )
 
-    _ControlFrame = TypeVar('_ControlFrame', bound='L2CAP_Control_Frame')
+    @staticmethod
+    def subclass(fields):
+        def inner(cls):
+            cls.name = cls.__name__.upper()
+            cls.code = key_with_value(L2CAP_CONTROL_FRAME_NAMES, cls.name)
+            if cls.code is None:
+                raise KeyError(
+                    f'Control Frame name {cls.name} '
+                    'not found in L2CAP_CONTROL_FRAME_NAMES'
+                )
+            cls.fields = fields
 
-    @classmethod
-    def subclass(cls, subclass: type[_ControlFrame]) -> type[_ControlFrame]:
-        subclass.name = subclass.__name__.upper()
-        subclass.code = CommandCode[subclass.name]
-        subclass.fields = hci.HCI_Object.fields_from_dataclass(subclass)
+            # Register a factory for this class
+            L2CAP_Control_Frame.classes[cls.code] = cls
 
-        # Register a factory for this class
-        L2CAP_Control_Frame.classes[subclass.code] = subclass
+            return cls
 
-        return subclass
+        return inner
 
-    @property
-    def payload(self) -> bytes:
-        if self._payload is None:
-            self._payload = hci.HCI_Object.dict_to_bytes(self.__dict__, self.fields)
-        return self._payload
+    def __init__(self, pdu=None, **kwargs) -> None:
+        self.identifier = kwargs.get('identifier', 0)
+        if hasattr(self, 'fields'):
+            if kwargs:
+                HCI_Object.init_from_fields(self, self.fields, kwargs)
+            if pdu is None:
+                data = HCI_Object.dict_to_bytes(kwargs, self.fields)
+                pdu = (
+                    bytes([self.code, self.identifier])
+                    + struct.pack('<H', len(data))
+                    + data
+                )
+        self.pdu = pdu
 
-    @payload.setter
-    def payload(self, payload: bytes) -> None:
-        self._payload = payload
+    def init_from_bytes(self, pdu, offset):
+        return HCI_Object.init_from_bytes(self, pdu, offset, self.fields)
 
     def __bytes__(self) -> bytes:
-        return (
-            struct.pack('<BBH', self.code, self.identifier, len(self.payload))
-            + self.payload
-        )
+        return self.pdu
 
     def __str__(self) -> str:
         result = f'{color(self.name, "yellow")} [ID={self.identifier}]'
         if fields := getattr(self, 'fields', None):
-            result += ':\n' + hci.HCI_Object.format_fields(self.__dict__, fields, '  ')
+            result += ':\n' + HCI_Object.format_fields(self.__dict__, fields, '  ')
         else:
-            if len(self.payload) > 1:
-                result += f': {self.payload.hex()}'
+            if len(self.pdu) > 1:
+                result += f': {self.pdu.hex()}'
         return result
 
 
 # -----------------------------------------------------------------------------
-@L2CAP_Control_Frame.subclass
-@dataclasses.dataclass
+@L2CAP_Control_Frame.subclass(
+    # pylint: disable=unnecessary-lambda
+    [
+        (
+            'reason',
+            {'size': 2, 'mapper': lambda x: L2CAP_Command_Reject.reason_name(x)},
+        ),
+        ('data', '*'),
+    ]
+)
 class L2CAP_Command_Reject(L2CAP_Control_Frame):
     '''
     See Bluetooth spec @ Vol 3, Part A - 4.1 COMMAND REJECT
     '''
 
-    class Reason(hci.SpecableEnum):
-        COMMAND_NOT_UNDERSTOOD = 0x0000
-        SIGNALING_MTU_EXCEEDED = 0x0001
-        INVALID_CID_IN_REQUEST = 0x0002
+    COMMAND_NOT_UNDERSTOOD = 0x0000
+    SIGNALING_MTU_EXCEEDED = 0x0001
+    INVALID_CID_IN_REQUEST = 0x0002
 
-    reason: int = dataclasses.field(metadata=Reason.type_metadata(2))
-    data: bytes = dataclasses.field(metadata=hci.metadata('*'))
+    REASON_NAMES = {
+        COMMAND_NOT_UNDERSTOOD: 'COMMAND_NOT_UNDERSTOOD',
+        SIGNALING_MTU_EXCEEDED: 'SIGNALING_MTU_EXCEEDED',
+        INVALID_CID_IN_REQUEST: 'INVALID_CID_IN_REQUEST',
+    }
+
+    @staticmethod
+    def reason_name(reason: int) -> str:
+        return name_or_number(L2CAP_Command_Reject.REASON_NAMES, reason)
 
 
 # -----------------------------------------------------------------------------
-@L2CAP_Control_Frame.subclass
-@dataclasses.dataclass
+@L2CAP_Control_Frame.subclass(
+    # pylint: disable=unnecessary-lambda
+    [
+        (
+            'psm',
+            {
+                'parser': lambda data, offset: L2CAP_Connection_Request.parse_psm(
+                    data, offset
+                ),
+                'serializer': lambda value: L2CAP_Connection_Request.serialize_psm(
+                    value
+                ),
+            },
+        ),
+        ('source_cid', 2),
+    ]
+)
 class L2CAP_Connection_Request(L2CAP_Control_Frame):
     '''
     See Bluetooth spec @ Vol 3, Part A - 4.2 CONNECTION REQUEST
     '''
 
+    psm: int
+    source_cid: int
+
     @staticmethod
-    def parse_psm(data: bytes, offset: int = 0) -> tuple[int, int]:
+    def parse_psm(data: bytes, offset: int = 0) -> Tuple[int, int]:
         psm_length = 2
         psm = data[offset] | data[offset + 1] << 8
 
@@ -347,138 +421,156 @@ class L2CAP_Connection_Request(L2CAP_Control_Frame):
 
         return serialized
 
-    psm: int = dataclasses.field(
-        metadata=hci.metadata(
-            {
-                'parser': lambda data, offset: L2CAP_Connection_Request.parse_psm(
-                    data, offset
-                ),
-                'serializer': lambda value: L2CAP_Connection_Request.serialize_psm(
-                    value
-                ),
-            }
-        )
-    )
-    source_cid: int = dataclasses.field(metadata=hci.metadata(2))
-
 
 # -----------------------------------------------------------------------------
-@L2CAP_Control_Frame.subclass
-@dataclasses.dataclass
+@L2CAP_Control_Frame.subclass(
+    # pylint: disable=unnecessary-lambda
+    [
+        ('destination_cid', 2),
+        ('source_cid', 2),
+        (
+            'result',
+            {'size': 2, 'mapper': lambda x: L2CAP_Connection_Response.result_name(x)},
+        ),
+        ('status', 2),
+    ]
+)
 class L2CAP_Connection_Response(L2CAP_Control_Frame):
     '''
     See Bluetooth spec @ Vol 3, Part A - 4.3 CONNECTION RESPONSE
     '''
 
-    class Result(hci.SpecableEnum):
-        CONNECTION_SUCCESSFUL = 0x0000
-        CONNECTION_PENDING = 0x0001
-        CONNECTION_REFUSED_PSM_NOT_SUPPORTED = 0x0002
-        CONNECTION_REFUSED_SECURITY_BLOCK = 0x0003
-        CONNECTION_REFUSED_NO_RESOURCES_AVAILABLE = 0x0004
-        CONNECTION_REFUSED_INVALID_SOURCE_CID = 0x0006
-        CONNECTION_REFUSED_SOURCE_CID_ALREADY_ALLOCATED = 0x0007
-        CONNECTION_REFUSED_UNACCEPTABLE_PARAMETERS = 0x000B
+    source_cid: int
+    destination_cid: int
+    status: int
+    result: int
 
-    destination_cid: int = dataclasses.field(metadata=hci.metadata(2))
-    source_cid: int = dataclasses.field(metadata=hci.metadata(2))
-    result: int = dataclasses.field(metadata=Result.type_metadata(2))
-    status: int = dataclasses.field(metadata=hci.metadata(2))
+    CONNECTION_SUCCESSFUL = 0x0000
+    CONNECTION_PENDING = 0x0001
+    CONNECTION_REFUSED_PSM_NOT_SUPPORTED = 0x0002
+    CONNECTION_REFUSED_SECURITY_BLOCK = 0x0003
+    CONNECTION_REFUSED_NO_RESOURCES_AVAILABLE = 0x0004
+    CONNECTION_REFUSED_INVALID_SOURCE_CID = 0x0006
+    CONNECTION_REFUSED_SOURCE_CID_ALREADY_ALLOCATED = 0x0007
+    CONNECTION_REFUSED_UNACCEPTABLE_PARAMETERS = 0x000B
+
+    # pylint: disable=line-too-long
+    RESULT_NAMES = {
+        CONNECTION_SUCCESSFUL: 'CONNECTION_SUCCESSFUL',
+        CONNECTION_PENDING: 'CONNECTION_PENDING',
+        CONNECTION_REFUSED_PSM_NOT_SUPPORTED: 'CONNECTION_REFUSED_PSM_NOT_SUPPORTED',
+        CONNECTION_REFUSED_SECURITY_BLOCK: 'CONNECTION_REFUSED_SECURITY_BLOCK',
+        CONNECTION_REFUSED_NO_RESOURCES_AVAILABLE: 'CONNECTION_REFUSED_NO_RESOURCES_AVAILABLE',
+        CONNECTION_REFUSED_INVALID_SOURCE_CID: 'CONNECTION_REFUSED_INVALID_SOURCE_CID',
+        CONNECTION_REFUSED_SOURCE_CID_ALREADY_ALLOCATED: 'CONNECTION_REFUSED_SOURCE_CID_ALREADY_ALLOCATED',
+        CONNECTION_REFUSED_UNACCEPTABLE_PARAMETERS: 'CONNECTION_REFUSED_UNACCEPTABLE_PARAMETERS',
+    }
+
+    @staticmethod
+    def result_name(result: int) -> str:
+        return name_or_number(L2CAP_Connection_Response.RESULT_NAMES, result)
 
 
 # -----------------------------------------------------------------------------
-@L2CAP_Control_Frame.subclass
-@dataclasses.dataclass
+@L2CAP_Control_Frame.subclass([('destination_cid', 2), ('flags', 2), ('options', '*')])
 class L2CAP_Configure_Request(L2CAP_Control_Frame):
     '''
     See Bluetooth spec @ Vol 3, Part A - 4.4 CONFIGURATION REQUEST
     '''
 
-    destination_cid: int = dataclasses.field(metadata=hci.metadata(2))
-    flags: int = dataclasses.field(metadata=hci.metadata(2))
-    options: bytes = dataclasses.field(metadata=hci.metadata('*'))
-
 
 # -----------------------------------------------------------------------------
-@L2CAP_Control_Frame.subclass
-@dataclasses.dataclass
+@L2CAP_Control_Frame.subclass(
+    # pylint: disable=unnecessary-lambda
+    [
+        ('source_cid', 2),
+        ('flags', 2),
+        (
+            'result',
+            {'size': 2, 'mapper': lambda x: L2CAP_Configure_Response.result_name(x)},
+        ),
+        ('options', '*'),
+    ]
+)
 class L2CAP_Configure_Response(L2CAP_Control_Frame):
     '''
     See Bluetooth spec @ Vol 3, Part A - 4.5 CONFIGURATION RESPONSE
     '''
 
-    class Result(hci.SpecableEnum):
-        SUCCESS = 0x0000
-        FAILURE_UNACCEPTABLE_PARAMETERS = 0x0001
-        FAILURE_REJECTED = 0x0002
-        FAILURE_UNKNOWN_OPTIONS = 0x0003
-        PENDING = 0x0004
-        FAILURE_FLOW_SPEC_REJECTED = 0x0005
+    SUCCESS = 0x0000
+    FAILURE_UNACCEPTABLE_PARAMETERS = 0x0001
+    FAILURE_REJECTED = 0x0002
+    FAILURE_UNKNOWN_OPTIONS = 0x0003
+    PENDING = 0x0004
+    FAILURE_FLOW_SPEC_REJECTED = 0x0005
 
-    source_cid: int = dataclasses.field(metadata=hci.metadata(2))
-    flags: int = dataclasses.field(metadata=hci.metadata(2))
-    result: int = dataclasses.field(metadata=Result.type_metadata(2))
-    options: bytes = dataclasses.field(metadata=hci.metadata('*'))
+    RESULT_NAMES = {
+        SUCCESS: 'SUCCESS',
+        FAILURE_UNACCEPTABLE_PARAMETERS: 'FAILURE_UNACCEPTABLE_PARAMETERS',
+        FAILURE_REJECTED: 'FAILURE_REJECTED',
+        FAILURE_UNKNOWN_OPTIONS: 'FAILURE_UNKNOWN_OPTIONS',
+        PENDING: 'PENDING',
+        FAILURE_FLOW_SPEC_REJECTED: 'FAILURE_FLOW_SPEC_REJECTED',
+    }
+
+    @staticmethod
+    def result_name(result: int) -> str:
+        return name_or_number(L2CAP_Configure_Response.RESULT_NAMES, result)
 
 
 # -----------------------------------------------------------------------------
-@L2CAP_Control_Frame.subclass
-@dataclasses.dataclass
+@L2CAP_Control_Frame.subclass([('destination_cid', 2), ('source_cid', 2)])
 class L2CAP_Disconnection_Request(L2CAP_Control_Frame):
     '''
     See Bluetooth spec @ Vol 3, Part A - 4.6 DISCONNECTION REQUEST
     '''
 
-    destination_cid: int = dataclasses.field(metadata=hci.metadata(2))
-    source_cid: int = dataclasses.field(metadata=hci.metadata(2))
-
 
 # -----------------------------------------------------------------------------
-@L2CAP_Control_Frame.subclass
-@dataclasses.dataclass
+@L2CAP_Control_Frame.subclass([('destination_cid', 2), ('source_cid', 2)])
 class L2CAP_Disconnection_Response(L2CAP_Control_Frame):
     '''
     See Bluetooth spec @ Vol 3, Part A - 4.7 DISCONNECTION RESPONSE
     '''
 
-    destination_cid: int = dataclasses.field(metadata=hci.metadata(2))
-    source_cid: int = dataclasses.field(metadata=hci.metadata(2))
-
 
 # -----------------------------------------------------------------------------
-@L2CAP_Control_Frame.subclass
-@dataclasses.dataclass
+@L2CAP_Control_Frame.subclass([('data', '*')])
 class L2CAP_Echo_Request(L2CAP_Control_Frame):
     '''
     See Bluetooth spec @ Vol 3, Part A - 4.8 ECHO REQUEST
     '''
 
-    data: bytes = dataclasses.field(metadata=hci.metadata('*'))
-
 
 # -----------------------------------------------------------------------------
-@L2CAP_Control_Frame.subclass
-@dataclasses.dataclass
+@L2CAP_Control_Frame.subclass([('data', '*')])
 class L2CAP_Echo_Response(L2CAP_Control_Frame):
     '''
     See Bluetooth spec @ Vol 3, Part A - 4.9 ECHO RESPONSE
     '''
 
-    data: bytes = dataclasses.field(metadata=hci.metadata('*'))
-
 
 # -----------------------------------------------------------------------------
-@L2CAP_Control_Frame.subclass
-@dataclasses.dataclass
+@L2CAP_Control_Frame.subclass(
+    [
+        (
+            'info_type',
+            {
+                'size': 2,
+                # pylint: disable-next=unnecessary-lambda
+                'mapper': lambda x: L2CAP_Information_Request.info_type_name(x),
+            },
+        )
+    ]
+)
 class L2CAP_Information_Request(L2CAP_Control_Frame):
     '''
     See Bluetooth spec @ Vol 3, Part A - 4.10 INFORMATION REQUEST
     '''
 
-    class InfoType(hci.SpecableEnum):
-        CONNECTIONLESS_MTU = 0x0001
-        EXTENDED_FEATURES_SUPPORTED = 0x0002
-        FIXED_CHANNELS_SUPPORTED = 0x0003
+    CONNECTIONLESS_MTU = 0x0001
+    EXTENDED_FEATURES_SUPPORTED = 0x0002
+    FIXED_CHANNELS_SUPPORTED = 0x0003
 
     EXTENDED_FEATURE_FLOW_MODE_CONTROL = 0x0001
     EXTENDED_FEATURE_RETRANSMISSION_MODE = 0x0002
@@ -492,107 +584,138 @@ class L2CAP_Information_Request(L2CAP_Control_Frame):
     EXTENDED_FEATURE_UNICAST_CONNECTIONLESS_DATA = 0x0200
     EXTENDED_FEATURE_ENHANCED_CREDIT_BASE_FLOW_CONTROL = 0x0400
 
-    info_type: int = dataclasses.field(metadata=InfoType.type_metadata(2))
+    INFO_TYPE_NAMES = {
+        CONNECTIONLESS_MTU: 'CONNECTIONLESS_MTU',
+        EXTENDED_FEATURES_SUPPORTED: 'EXTENDED_FEATURES_SUPPORTED',
+        FIXED_CHANNELS_SUPPORTED: 'FIXED_CHANNELS_SUPPORTED',
+    }
+
+    @staticmethod
+    def info_type_name(info_type: int) -> str:
+        return name_or_number(L2CAP_Information_Request.INFO_TYPE_NAMES, info_type)
 
 
 # -----------------------------------------------------------------------------
-@L2CAP_Control_Frame.subclass
-@dataclasses.dataclass
+@L2CAP_Control_Frame.subclass(
+    [
+        ('info_type', {'size': 2, 'mapper': L2CAP_Information_Request.info_type_name}),
+        (
+            'result',
+            # pylint: disable-next=unnecessary-lambda
+            {'size': 2, 'mapper': lambda x: L2CAP_Information_Response.result_name(x)},
+        ),
+        ('data', '*'),
+    ]
+)
 class L2CAP_Information_Response(L2CAP_Control_Frame):
     '''
     See Bluetooth spec @ Vol 3, Part A - 4.11 INFORMATION RESPONSE
     '''
 
-    class Result(hci.SpecableEnum):
-        SUCCESS = 0x00
-        NOT_SUPPORTED = 0x01
+    SUCCESS = 0x00
+    NOT_SUPPORTED = 0x01
 
-    info_type: int = dataclasses.field(
-        metadata=L2CAP_Information_Request.InfoType.type_metadata(2)
-    )
-    result: int = dataclasses.field(metadata=Result.type_metadata(2))
-    data: bytes = dataclasses.field(metadata=hci.metadata('*'))
+    RESULT_NAMES = {SUCCESS: 'SUCCESS', NOT_SUPPORTED: 'NOT_SUPPORTED'}
+
+    @staticmethod
+    def result_name(result: int) -> str:
+        return name_or_number(L2CAP_Information_Response.RESULT_NAMES, result)
 
 
 # -----------------------------------------------------------------------------
-@L2CAP_Control_Frame.subclass
-@dataclasses.dataclass
+@L2CAP_Control_Frame.subclass(
+    [('interval_min', 2), ('interval_max', 2), ('latency', 2), ('timeout', 2)]
+)
 class L2CAP_Connection_Parameter_Update_Request(L2CAP_Control_Frame):
     '''
     See Bluetooth spec @ Vol 3, Part A - 4.20 CONNECTION PARAMETER UPDATE REQUEST
     '''
 
-    interval_min: int = dataclasses.field(metadata=hci.metadata(2))
-    interval_max: int = dataclasses.field(metadata=hci.metadata(2))
-    latency: int = dataclasses.field(metadata=hci.metadata(2))
-    timeout: int = dataclasses.field(metadata=hci.metadata(2))
-
 
 # -----------------------------------------------------------------------------
-@L2CAP_Control_Frame.subclass
-@dataclasses.dataclass
+@L2CAP_Control_Frame.subclass([('result', 2)])
 class L2CAP_Connection_Parameter_Update_Response(L2CAP_Control_Frame):
     '''
     See Bluetooth spec @ Vol 3, Part A - 4.21 CONNECTION PARAMETER UPDATE RESPONSE
     '''
 
-    result: int = dataclasses.field(metadata=hci.metadata(2))
-
 
 # -----------------------------------------------------------------------------
-@L2CAP_Control_Frame.subclass
-@dataclasses.dataclass
+@L2CAP_Control_Frame.subclass(
+    [('le_psm', 2), ('source_cid', 2), ('mtu', 2), ('mps', 2), ('initial_credits', 2)]
+)
 class L2CAP_LE_Credit_Based_Connection_Request(L2CAP_Control_Frame):
     '''
     See Bluetooth spec @ Vol 3, Part A - 4.22 LE CREDIT BASED CONNECTION REQUEST
     (CODE 0x14)
     '''
 
-    le_psm: int = dataclasses.field(metadata=hci.metadata(2))
-    source_cid: int = dataclasses.field(metadata=hci.metadata(2))
-    mtu: int = dataclasses.field(metadata=hci.metadata(2))
-    mps: int = dataclasses.field(metadata=hci.metadata(2))
-    initial_credits: int = dataclasses.field(metadata=hci.metadata(2))
+    source_cid: int
 
 
 # -----------------------------------------------------------------------------
-@L2CAP_Control_Frame.subclass
-@dataclasses.dataclass
+@L2CAP_Control_Frame.subclass(
+    # pylint: disable=unnecessary-lambda,line-too-long
+    [
+        ('destination_cid', 2),
+        ('mtu', 2),
+        ('mps', 2),
+        ('initial_credits', 2),
+        (
+            'result',
+            {
+                'size': 2,
+                'mapper': lambda x: L2CAP_LE_Credit_Based_Connection_Response.result_name(
+                    x
+                ),
+            },
+        ),
+    ]
+)
 class L2CAP_LE_Credit_Based_Connection_Response(L2CAP_Control_Frame):
     '''
     See Bluetooth spec @ Vol 3, Part A - 4.23 LE CREDIT BASED CONNECTION RESPONSE
     (CODE 0x15)
     '''
 
-    class Result(hci.SpecableEnum):
-        CONNECTION_SUCCESSFUL = 0x0000
-        CONNECTION_REFUSED_LE_PSM_NOT_SUPPORTED = 0x0002
-        CONNECTION_REFUSED_NO_RESOURCES_AVAILABLE = 0x0004
-        CONNECTION_REFUSED_INSUFFICIENT_AUTHENTICATION = 0x0005
-        CONNECTION_REFUSED_INSUFFICIENT_AUTHORIZATION = 0x0006
-        CONNECTION_REFUSED_INSUFFICIENT_ENCRYPTION_KEY_SIZE = 0x0007
-        CONNECTION_REFUSED_INSUFFICIENT_ENCRYPTION = 0x0008
-        CONNECTION_REFUSED_INVALID_SOURCE_CID = 0x0009
-        CONNECTION_REFUSED_SOURCE_CID_ALREADY_ALLOCATED = 0x000A
-        CONNECTION_REFUSED_UNACCEPTABLE_PARAMETERS = 0x000B
+    CONNECTION_SUCCESSFUL = 0x0000
+    CONNECTION_REFUSED_LE_PSM_NOT_SUPPORTED = 0x0002
+    CONNECTION_REFUSED_NO_RESOURCES_AVAILABLE = 0x0004
+    CONNECTION_REFUSED_INSUFFICIENT_AUTHENTICATION = 0x0005
+    CONNECTION_REFUSED_INSUFFICIENT_AUTHORIZATION = 0x0006
+    CONNECTION_REFUSED_INSUFFICIENT_ENCRYPTION_KEY_SIZE = 0x0007
+    CONNECTION_REFUSED_INSUFFICIENT_ENCRYPTION = 0x0008
+    CONNECTION_REFUSED_INVALID_SOURCE_CID = 0x0009
+    CONNECTION_REFUSED_SOURCE_CID_ALREADY_ALLOCATED = 0x000A
+    CONNECTION_REFUSED_UNACCEPTABLE_PARAMETERS = 0x000B
 
-    destination_cid: int = dataclasses.field(metadata=hci.metadata(2))
-    mtu: int = dataclasses.field(metadata=hci.metadata(2))
-    mps: int = dataclasses.field(metadata=hci.metadata(2))
-    initial_credits: int = dataclasses.field(metadata=hci.metadata(2))
-    result: int = dataclasses.field(metadata=Result.type_metadata(2))
+    # pylint: disable=line-too-long
+    RESULT_NAMES = {
+        CONNECTION_SUCCESSFUL: 'CONNECTION_SUCCESSFUL',
+        CONNECTION_REFUSED_LE_PSM_NOT_SUPPORTED: 'CONNECTION_REFUSED_LE_PSM_NOT_SUPPORTED',
+        CONNECTION_REFUSED_NO_RESOURCES_AVAILABLE: 'CONNECTION_REFUSED_NO_RESOURCES_AVAILABLE',
+        CONNECTION_REFUSED_INSUFFICIENT_AUTHENTICATION: 'CONNECTION_REFUSED_INSUFFICIENT_AUTHENTICATION',
+        CONNECTION_REFUSED_INSUFFICIENT_AUTHORIZATION: 'CONNECTION_REFUSED_INSUFFICIENT_AUTHORIZATION',
+        CONNECTION_REFUSED_INSUFFICIENT_ENCRYPTION_KEY_SIZE: 'CONNECTION_REFUSED_INSUFFICIENT_ENCRYPTION_KEY_SIZE',
+        CONNECTION_REFUSED_INSUFFICIENT_ENCRYPTION: 'CONNECTION_REFUSED_INSUFFICIENT_ENCRYPTION',
+        CONNECTION_REFUSED_INVALID_SOURCE_CID: 'CONNECTION_REFUSED_INVALID_SOURCE_CID',
+        CONNECTION_REFUSED_SOURCE_CID_ALREADY_ALLOCATED: 'CONNECTION_REFUSED_SOURCE_CID_ALREADY_ALLOCATED',
+        CONNECTION_REFUSED_UNACCEPTABLE_PARAMETERS: 'CONNECTION_REFUSED_UNACCEPTABLE_PARAMETERS',
+    }
+
+    @staticmethod
+    def result_name(result: int) -> str:
+        return name_or_number(
+            L2CAP_LE_Credit_Based_Connection_Response.RESULT_NAMES, result
+        )
 
 
 # -----------------------------------------------------------------------------
-@L2CAP_Control_Frame.subclass
-@dataclasses.dataclass
+@L2CAP_Control_Frame.subclass([('cid', 2), ('credits', 2)])
 class L2CAP_LE_Flow_Control_Credit(L2CAP_Control_Frame):
     '''
     See Bluetooth spec @ Vol 3, Part A - 4.24 LE FLOW CONTROL CREDIT (CODE 0x16)
     '''
-
-    cid: int = dataclasses.field(metadata=hci.metadata(2))
-    credits: int = dataclasses.field(metadata=hci.metadata(2))
 
 
 # -----------------------------------------------------------------------------
@@ -700,7 +823,9 @@ class ClassicChannel(utils.EventEmitter):
 
         # Wait for the connection to succeed or fail
         try:
-            return await self.connection.cancel_on_disconnection(self.connection_result)
+            return await utils.cancel_on_event(
+                self.connection, 'disconnection', self.connection_result
+            )
         finally:
             self.connection_result = None
 
@@ -745,7 +870,7 @@ class ClassicChannel(utils.EventEmitter):
             )
         )
 
-    def on_connection_request(self, request: L2CAP_Connection_Request) -> None:
+    def on_connection_request(self, request) -> None:
         self.destination_cid = request.source_cid
         self._change_state(self.State.WAIT_CONNECT)
         self.send_control_frame(
@@ -753,7 +878,7 @@ class ClassicChannel(utils.EventEmitter):
                 identifier=request.identifier,
                 destination_cid=self.source_cid,
                 source_cid=self.destination_cid,
-                result=L2CAP_Connection_Response.Result.CONNECTION_SUCCESSFUL,
+                result=L2CAP_Connection_Response.CONNECTION_SUCCESSFUL,
                 status=0x0000,
             )
         )
@@ -761,31 +886,30 @@ class ClassicChannel(utils.EventEmitter):
         self.send_configure_request()
         self._change_state(self.State.WAIT_CONFIG_REQ_RSP)
 
-    def on_connection_response(self, response: L2CAP_Connection_Response):
+    def on_connection_response(self, response):
         if self.state != self.State.WAIT_CONNECT_RSP:
             logger.warning(color('invalid state', 'red'))
             return
 
-        if response.result == L2CAP_Connection_Response.Result.CONNECTION_SUCCESSFUL:
+        if response.result == L2CAP_Connection_Response.CONNECTION_SUCCESSFUL:
             self.destination_cid = response.destination_cid
             self._change_state(self.State.WAIT_CONFIG)
             self.send_configure_request()
             self._change_state(self.State.WAIT_CONFIG_REQ_RSP)
-        elif response.result == L2CAP_Connection_Response.Result.CONNECTION_PENDING:
+        elif response.result == L2CAP_Connection_Response.CONNECTION_PENDING:
             pass
         else:
             self._change_state(self.State.CLOSED)
-            if self.connection_result:
-                self.connection_result.set_exception(
-                    ProtocolError(
-                        response.result,
-                        'l2cap',
-                        L2CAP_Connection_Response.Result(response.result).name,
-                    )
+            self.connection_result.set_exception(
+                ProtocolError(
+                    response.result,
+                    'l2cap',
+                    L2CAP_Connection_Response.result_name(response.result),
                 )
-                self.connection_result = None
+            )
+            self.connection_result = None
 
-    def on_configure_request(self, request: L2CAP_Configure_Request) -> None:
+    def on_configure_request(self, request) -> None:
         if self.state not in (
             self.State.WAIT_CONFIG,
             self.State.WAIT_CONFIG_REQ,
@@ -806,7 +930,7 @@ class ClassicChannel(utils.EventEmitter):
                 identifier=request.identifier,
                 source_cid=self.destination_cid,
                 flags=0x0000,
-                result=L2CAP_Configure_Response.Result.SUCCESS,
+                result=L2CAP_Configure_Response.SUCCESS,
                 options=request.options,  # TODO: don't accept everything blindly
             )
         )
@@ -823,8 +947,8 @@ class ClassicChannel(utils.EventEmitter):
         elif self.state == self.State.WAIT_CONFIG_REQ_RSP:
             self._change_state(self.State.WAIT_CONFIG_RSP)
 
-    def on_configure_response(self, response: L2CAP_Configure_Response) -> None:
-        if response.result == L2CAP_Configure_Response.Result.SUCCESS:
+    def on_configure_response(self, response) -> None:
+        if response.result == L2CAP_Configure_Response.SUCCESS:
             if self.state == self.State.WAIT_CONFIG_REQ_RSP:
                 self._change_state(self.State.WAIT_CONFIG_REQ)
             elif self.state in (
@@ -839,8 +963,7 @@ class ClassicChannel(utils.EventEmitter):
             else:
                 logger.warning(color('invalid state', 'red'))
         elif (
-            response.result
-            == L2CAP_Configure_Response.Result.FAILURE_UNACCEPTABLE_PARAMETERS
+            response.result == L2CAP_Configure_Response.FAILURE_UNACCEPTABLE_PARAMETERS
         ):
             # Re-configure with what's suggested in the response
             self.send_control_frame(
@@ -855,13 +978,13 @@ class ClassicChannel(utils.EventEmitter):
             logger.warning(
                 color(
                     '!!! configuration rejected: '
-                    f'{L2CAP_Configure_Response.Result(response.result).name}',
+                    f'{L2CAP_Configure_Response.result_name(response.result)}',
                     'red',
                 )
             )
             # TODO: decide how to fail gracefully
 
-    def on_disconnection_request(self, request: L2CAP_Disconnection_Request) -> None:
+    def on_disconnection_request(self, request) -> None:
         if self.state in (self.State.OPEN, self.State.WAIT_DISCONNECT):
             self.send_control_frame(
                 L2CAP_Disconnection_Response(
@@ -876,7 +999,7 @@ class ClassicChannel(utils.EventEmitter):
         else:
             logger.warning(color('invalid state', 'red'))
 
-    def on_disconnection_response(self, response: L2CAP_Disconnection_Response) -> None:
+    def on_disconnection_response(self, response) -> None:
         if self.state != self.State.WAIT_DISCONNECT:
             logger.warning(color('invalid state', 'red'))
             return
@@ -918,7 +1041,7 @@ class LeCreditBasedChannel(utils.EventEmitter):
         DISCONNECTED = 4
         CONNECTION_ERROR = 5
 
-    out_queue: deque[bytes]
+    out_queue: Deque[bytes]
     connection_result: Optional[asyncio.Future[LeCreditBasedChannel]]
     disconnection_result: Optional[asyncio.Future[None]]
     in_sdu: Optional[bytes]
@@ -1109,9 +1232,7 @@ class LeCreditBasedChannel(utils.EventEmitter):
         self.in_sdu = None
         self.in_sdu_length = 0
 
-    def on_connection_response(
-        self, response: L2CAP_LE_Credit_Based_Connection_Response
-    ) -> None:
+    def on_connection_response(self, response) -> None:
         # Look for a matching pending response result
         if self.connection_result is None:
             logger.warning(
@@ -1121,7 +1242,7 @@ class LeCreditBasedChannel(utils.EventEmitter):
 
         if (
             response.result
-            == L2CAP_LE_Credit_Based_Connection_Response.Result.CONNECTION_SUCCESSFUL
+            == L2CAP_LE_Credit_Based_Connection_Response.CONNECTION_SUCCESSFUL
         ):
             self.destination_cid = response.destination_cid
             self.peer_mtu = response.mtu
@@ -1135,9 +1256,9 @@ class LeCreditBasedChannel(utils.EventEmitter):
                 ProtocolError(
                     response.result,
                     'l2cap',
-                    L2CAP_LE_Credit_Based_Connection_Response.Result(
+                    L2CAP_LE_Credit_Based_Connection_Response.result_name(
                         response.result
-                    ).name,
+                    ),
                 )
             )
             self._change_state(self.State.CONNECTION_ERROR)
@@ -1152,7 +1273,7 @@ class LeCreditBasedChannel(utils.EventEmitter):
         # Try to send more data if we have any queued up
         self.process_output()
 
-    def on_disconnection_request(self, request: L2CAP_Disconnection_Request) -> None:
+    def on_disconnection_request(self, request) -> None:
         self.send_control_frame(
             L2CAP_Disconnection_Response(
                 identifier=request.identifier,
@@ -1163,7 +1284,7 @@ class LeCreditBasedChannel(utils.EventEmitter):
         self._change_state(self.State.DISCONNECTED)
         self.flush_output()
 
-    def on_disconnection_response(self, response: L2CAP_Disconnection_Response) -> None:
+    def on_disconnection_response(self, response) -> None:
         if self.state != self.State.DISCONNECTING:
             logger.warning(color('invalid state', 'red'))
             return
@@ -1324,13 +1445,13 @@ class LeCreditBasedChannelServer(utils.EventEmitter):
 
 # -----------------------------------------------------------------------------
 class ChannelManager:
-    identifiers: dict[int, int]
-    channels: dict[int, dict[int, Union[ClassicChannel, LeCreditBasedChannel]]]
-    servers: dict[int, ClassicChannelServer]
-    le_coc_channels: dict[int, dict[int, LeCreditBasedChannel]]
-    le_coc_servers: dict[int, LeCreditBasedChannelServer]
-    le_coc_requests: dict[int, L2CAP_LE_Credit_Based_Connection_Request]
-    fixed_channels: dict[int, Optional[Callable[[int, bytes], Any]]]
+    identifiers: Dict[int, int]
+    channels: Dict[int, Dict[int, Union[ClassicChannel, LeCreditBasedChannel]]]
+    servers: Dict[int, ClassicChannelServer]
+    le_coc_channels: Dict[int, Dict[int, LeCreditBasedChannel]]
+    le_coc_servers: Dict[int, LeCreditBasedChannelServer]
+    le_coc_requests: Dict[int, L2CAP_LE_Credit_Based_Connection_Request]
+    fixed_channels: Dict[int, Optional[Callable[[int, bytes], Any]]]
     _host: Optional[Host]
     connection_parameters_update_response: Optional[asyncio.Future[int]]
 
@@ -1612,12 +1733,12 @@ class ChannelManager:
             )
 
     def on_l2cap_command_reject(
-        self, _connection: Connection, _cid: int, packet: L2CAP_Command_Reject
+        self, _connection: Connection, _cid: int, packet
     ) -> None:
         logger.warning(f'{color("!!! Command rejected:", "red")} {packet.reason}')
 
     def on_l2cap_connection_request(
-        self, connection: Connection, cid: int, request: L2CAP_Connection_Request
+        self, connection: Connection, cid: int, request
     ) -> None:
         # Check if there's a server for this PSM
         server = self.servers.get(request.psm)
@@ -1634,7 +1755,7 @@ class ChannelManager:
                         destination_cid=request.source_cid,
                         source_cid=0,
                         # pylint: disable=line-too-long
-                        result=L2CAP_Connection_Response.Result.CONNECTION_REFUSED_NO_RESOURCES_AVAILABLE,
+                        result=L2CAP_Connection_Response.CONNECTION_REFUSED_NO_RESOURCES_AVAILABLE,
                         status=0x0000,
                     ),
                 )
@@ -1665,16 +1786,13 @@ class ChannelManager:
                     destination_cid=request.source_cid,
                     source_cid=0,
                     # pylint: disable=line-too-long
-                    result=L2CAP_Connection_Response.Result.CONNECTION_REFUSED_PSM_NOT_SUPPORTED,
+                    result=L2CAP_Connection_Response.CONNECTION_REFUSED_PSM_NOT_SUPPORTED,
                     status=0x0000,
                 ),
             )
 
     def on_l2cap_connection_response(
-        self,
-        connection: Connection,
-        cid: int,
-        response: L2CAP_Connection_Response,
+        self, connection: Connection, cid: int, response
     ) -> None:
         if (
             channel := self.find_channel(connection.handle, response.source_cid)
@@ -1691,7 +1809,7 @@ class ChannelManager:
         channel.on_connection_response(response)
 
     def on_l2cap_configure_request(
-        self, connection: Connection, cid: int, request: L2CAP_Configure_Request
+        self, connection: Connection, cid: int, request
     ) -> None:
         if (
             channel := self.find_channel(connection.handle, request.destination_cid)
@@ -1708,7 +1826,7 @@ class ChannelManager:
         channel.on_configure_request(request)
 
     def on_l2cap_configure_response(
-        self, connection: Connection, cid: int, response: L2CAP_Configure_Response
+        self, connection: Connection, cid: int, response
     ) -> None:
         if (
             channel := self.find_channel(connection.handle, response.source_cid)
@@ -1725,7 +1843,7 @@ class ChannelManager:
         channel.on_configure_response(response)
 
     def on_l2cap_disconnection_request(
-        self, connection: Connection, cid: int, request: L2CAP_Disconnection_Request
+        self, connection: Connection, cid: int, request
     ) -> None:
         if (
             channel := self.find_channel(connection.handle, request.destination_cid)
@@ -1742,7 +1860,7 @@ class ChannelManager:
         channel.on_disconnection_request(request)
 
     def on_l2cap_disconnection_response(
-        self, connection: Connection, cid: int, response: L2CAP_Disconnection_Response
+        self, connection: Connection, cid: int, response
     ) -> None:
         if (
             channel := self.find_channel(connection.handle, response.source_cid)
@@ -1758,9 +1876,7 @@ class ChannelManager:
 
         channel.on_disconnection_response(response)
 
-    def on_l2cap_echo_request(
-        self, connection: Connection, cid: int, request: L2CAP_Echo_Request
-    ) -> None:
+    def on_l2cap_echo_request(self, connection: Connection, cid: int, request) -> None:
         logger.debug(f'<<< Echo request: data={request.data.hex()}')
         self.send_control_frame(
             connection,
@@ -1769,31 +1885,25 @@ class ChannelManager:
         )
 
     def on_l2cap_echo_response(
-        self, _connection: Connection, _cid: int, response: L2CAP_Echo_Response
+        self, _connection: Connection, _cid: int, response
     ) -> None:
         logger.debug(f'<<< Echo response: data={response.data.hex()}')
         # TODO notify listeners
 
     def on_l2cap_information_request(
-        self, connection: Connection, cid: int, request: L2CAP_Information_Request
+        self, connection: Connection, cid: int, request
     ) -> None:
-        if request.info_type == L2CAP_Information_Request.InfoType.CONNECTIONLESS_MTU:
-            result = L2CAP_Information_Response.Result.SUCCESS
+        if request.info_type == L2CAP_Information_Request.CONNECTIONLESS_MTU:
+            result = L2CAP_Information_Response.SUCCESS
             data = self.connectionless_mtu.to_bytes(2, 'little')
-        elif (
-            request.info_type
-            == L2CAP_Information_Request.InfoType.EXTENDED_FEATURES_SUPPORTED
-        ):
-            result = L2CAP_Information_Response.Result.SUCCESS
+        elif request.info_type == L2CAP_Information_Request.EXTENDED_FEATURES_SUPPORTED:
+            result = L2CAP_Information_Response.SUCCESS
             data = sum(self.extended_features).to_bytes(4, 'little')
-        elif (
-            request.info_type
-            == L2CAP_Information_Request.InfoType.FIXED_CHANNELS_SUPPORTED
-        ):
-            result = L2CAP_Information_Response.Result.SUCCESS
+        elif request.info_type == L2CAP_Information_Request.FIXED_CHANNELS_SUPPORTED:
+            result = L2CAP_Information_Response.SUCCESS
             data = sum(1 << cid for cid in self.fixed_channels).to_bytes(8, 'little')
         else:
-            result = L2CAP_Information_Response.Result.NOT_SUPPORTED
+            result = L2CAP_Information_Response.NOT_SUPPORTED
             data = b''
 
         self.send_control_frame(
@@ -1808,12 +1918,9 @@ class ChannelManager:
         )
 
     def on_l2cap_connection_parameter_update_request(
-        self,
-        connection: Connection,
-        cid: int,
-        request: L2CAP_Connection_Parameter_Update_Request,
+        self, connection: Connection, cid: int, request
     ):
-        if connection.role == hci.Role.CENTRAL:
+        if connection.role == Role.CENTRAL:
             self.send_control_frame(
                 connection,
                 cid,
@@ -1823,7 +1930,7 @@ class ChannelManager:
                 ),
             )
             self.host.send_command_sync(
-                hci.HCI_LE_Connection_Update_Command(
+                HCI_LE_Connection_Update_Command(
                     connection_handle=connection.handle,
                     connection_interval_min=request.interval_min,
                     connection_interval_max=request.interval_max,
@@ -1861,7 +1968,6 @@ class ChannelManager:
             connection,
             L2CAP_LE_SIGNALING_CID,
             L2CAP_Connection_Parameter_Update_Request(
-                identifier=self.next_identifier(connection),
                 interval_min=interval_min,
                 interval_max=interval_max,
                 latency=latency,
@@ -1871,10 +1977,7 @@ class ChannelManager:
         return await self.connection_parameters_update_response
 
     def on_l2cap_connection_parameter_update_response(
-        self,
-        connection: Connection,
-        cid: int,
-        response: L2CAP_Connection_Parameter_Update_Response,
+        self, connection: Connection, cid: int, response
     ) -> None:
         if self.connection_parameters_update_response:
             self.connection_parameters_update_response.set_result(response.result)
@@ -1888,10 +1991,7 @@ class ChannelManager:
             )
 
     def on_l2cap_le_credit_based_connection_request(
-        self,
-        connection: Connection,
-        cid: int,
-        request: L2CAP_LE_Credit_Based_Connection_Request,
+        self, connection: Connection, cid: int, request
     ) -> None:
         if request.le_psm in self.le_coc_servers:
             server = self.le_coc_servers[request.le_psm]
@@ -1912,7 +2012,7 @@ class ChannelManager:
                         mps=server.mps,
                         initial_credits=0,
                         # pylint: disable=line-too-long
-                        result=L2CAP_LE_Credit_Based_Connection_Response.Result.CONNECTION_REFUSED_SOURCE_CID_ALREADY_ALLOCATED,
+                        result=L2CAP_LE_Credit_Based_Connection_Response.CONNECTION_REFUSED_SOURCE_CID_ALREADY_ALLOCATED,
                     ),
                 )
                 return
@@ -1931,7 +2031,7 @@ class ChannelManager:
                         mps=server.mps,
                         initial_credits=0,
                         # pylint: disable=line-too-long
-                        result=L2CAP_LE_Credit_Based_Connection_Response.Result.CONNECTION_REFUSED_NO_RESOURCES_AVAILABLE,
+                        result=L2CAP_LE_Credit_Based_Connection_Response.CONNECTION_REFUSED_NO_RESOURCES_AVAILABLE,
                     ),
                 )
                 return
@@ -1969,7 +2069,7 @@ class ChannelManager:
                     mps=server.mps,
                     initial_credits=server.max_credits,
                     # pylint: disable=line-too-long
-                    result=L2CAP_LE_Credit_Based_Connection_Response.Result.CONNECTION_SUCCESSFUL,
+                    result=L2CAP_LE_Credit_Based_Connection_Response.CONNECTION_SUCCESSFUL,
                 ),
             )
 
@@ -1990,15 +2090,12 @@ class ChannelManager:
                     mps=L2CAP_LE_CREDIT_BASED_CONNECTION_DEFAULT_MPS,
                     initial_credits=0,
                     # pylint: disable=line-too-long
-                    result=L2CAP_LE_Credit_Based_Connection_Response.Result.CONNECTION_REFUSED_LE_PSM_NOT_SUPPORTED,
+                    result=L2CAP_LE_Credit_Based_Connection_Response.CONNECTION_REFUSED_LE_PSM_NOT_SUPPORTED,
                 ),
             )
 
     def on_l2cap_le_credit_based_connection_response(
-        self,
-        connection: Connection,
-        _cid: int,
-        response: L2CAP_LE_Credit_Based_Connection_Response,
+        self, connection: Connection, _cid: int, response
     ) -> None:
         # Find the pending request by identifier
         request = self.le_coc_requests.get(response.identifier)
@@ -2023,7 +2120,7 @@ class ChannelManager:
         channel.on_connection_response(response)
 
     def on_l2cap_le_flow_control_credit(
-        self, connection: Connection, _cid: int, credit: L2CAP_LE_Flow_Control_Credit
+        self, connection: Connection, _cid: int, credit
     ) -> None:
         channel = self.find_le_coc_channel(connection.handle, credit.cid)
         if channel is None:

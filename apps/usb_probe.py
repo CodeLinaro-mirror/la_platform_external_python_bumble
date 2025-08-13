@@ -26,12 +26,13 @@
 # -----------------------------------------------------------------------------
 # Imports
 # -----------------------------------------------------------------------------
+import os
+import logging
 import click
 import usb1
 
 from bumble.colors import color
 from bumble.transport.usb import load_libusb
-import bumble.logging
 
 
 # -----------------------------------------------------------------------------
@@ -168,7 +169,7 @@ def is_bluetooth_hci(device):
 @click.command()
 @click.option('--verbose', is_flag=True, default=False, help='Print more details')
 def main(verbose):
-    bumble.logging.setup_basic_logging('WARNING')
+    logging.basicConfig(level=os.environ.get('BUMBLE_LOGLEVEL', 'WARNING').upper())
 
     load_libusb()
     with usb1.USBContext() as context:

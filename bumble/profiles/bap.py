@@ -24,6 +24,7 @@ import enum
 import struct
 import functools
 import logging
+from typing import List
 from typing_extensions import Self
 
 from bumble import core
@@ -281,7 +282,7 @@ class UnicastServerAdvertisingData:
 # -----------------------------------------------------------------------------
 
 
-def bits_to_channel_counts(data: int) -> list[int]:
+def bits_to_channel_counts(data: int) -> List[int]:
     pos = 0
     counts = []
     while data != 0:
@@ -526,7 +527,7 @@ class BasicAudioAnnouncement:
         codec_id: hci.CodingFormat
         codec_specific_configuration: CodecSpecificConfiguration
         metadata: le_audio.Metadata
-        bis: list[BasicAudioAnnouncement.BIS]
+        bis: List[BasicAudioAnnouncement.BIS]
 
         def __bytes__(self) -> bytes:
             metadata_bytes = bytes(self.metadata)
@@ -544,7 +545,7 @@ class BasicAudioAnnouncement:
             )
 
     presentation_delay: int
-    subgroups: list[BasicAudioAnnouncement.Subgroup]
+    subgroups: List[BasicAudioAnnouncement.Subgroup]
 
     @classmethod
     def from_bytes(cls, data: bytes) -> Self:

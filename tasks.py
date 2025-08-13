@@ -22,6 +22,7 @@ Invoke tasks
 import os
 import glob
 import shutil
+import urllib
 from pathlib import Path
 from invoke import task, call, Collection
 from invoke.exceptions import Exit, UnexpectedExit

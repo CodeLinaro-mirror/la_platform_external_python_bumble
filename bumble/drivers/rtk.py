@@ -20,7 +20,7 @@ Based on various online bits of information, including the Linux kernel.
 # -----------------------------------------------------------------------------
 # Imports
 # -----------------------------------------------------------------------------
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 import asyncio
 import enum
 import logging
@@ -29,11 +29,19 @@ import os
 import pathlib
 import platform
 import struct
+from typing import Tuple
 import weakref
 
 
 from bumble import core
-from bumble import hci
+from bumble.hci import (
+    hci_vendor_command_op_code,
+    STATUS_SPEC,
+    HCI_SUCCESS,
+    HCI_Command,
+    HCI_Reset_Command,
+    HCI_Read_Local_Version_Information_Command,
+)
 from bumble.drivers import common
 
 # -----------------------------------------------------------------------------
@@ -175,29 +183,27 @@ RTK_USB_PRODUCTS = {
 # -----------------------------------------------------------------------------
 # HCI Commands
 # -----------------------------------------------------------------------------
-HCI_RTK_READ_ROM_VERSION_COMMAND = hci.hci_vendor_command_op_code(0x6D)
-HCI_RTK_DOWNLOAD_COMMAND = hci.hci_vendor_command_op_code(0x20)
-HCI_RTK_DROP_FIRMWARE_COMMAND = hci.hci_vendor_command_op_code(0x66)
-hci.HCI_Command.register_commands(globals())
+HCI_RTK_READ_ROM_VERSION_COMMAND = hci_vendor_command_op_code(0x6D)
+HCI_RTK_DOWNLOAD_COMMAND = hci_vendor_command_op_code(0x20)
+HCI_RTK_DROP_FIRMWARE_COMMAND = hci_vendor_command_op_code(0x66)
+HCI_Command.register_commands(globals())
 
 
-@hci.HCI_Command.command
-@dataclass
-class HCI_RTK_Read_ROM_Version_Command(hci.HCI_Command):
-    return_parameters_fields = [("status", hci.STATUS_SPEC), ("version", 1)]
+@HCI_Command.command(return_parameters_fields=[("status", STATUS_SPEC), ("version", 1)])
+class HCI_RTK_Read_ROM_Version_Command(HCI_Command):
+    pass
 
 
-@hci.HCI_Command.command
-@dataclass
-class HCI_RTK_Download_Command(hci.HCI_Command):
-    index: int = field(metadata=hci.metadata(1))
-    payload: bytes = field(metadata=hci.metadata(RTK_FRAGMENT_LENGTH))
-    return_parameters_fields = [("status", hci.STATUS_SPEC), ("index", 1)]
+@HCI_Command.command(
+    fields=[("index", 1), ("payload", RTK_FRAGMENT_LENGTH)],
+    return_parameters_fields=[("status", STATUS_SPEC), ("index", 1)],
+)
+class HCI_RTK_Download_Command(HCI_Command):
+    pass
 
 
-@hci.HCI_Command.command
-@dataclass
-class HCI_RTK_Drop_Firmware_Command(hci.HCI_Command):
+@HCI_Command.command()
+class HCI_RTK_Drop_Firmware_Command(HCI_Command):
     pass
 
 
@@ -288,7 +294,7 @@ class Driver(common.Driver):
     @dataclass
     class DriverInfo:
         rom: int
-        hci: tuple[int, int]
+        hci: Tuple[int, int]
         config_needed: bool
         has_rom_version: bool
         has_msft_ext: bool = False
@@ -489,36 +495,21 @@ class Driver(common.Driver):
 
         return True
 
-    @staticmethod
-    async def get_loaded_firmware_version(host):
-        response = await host.send_command(HCI_RTK_Read_ROM_Version_Command())
-
-        if response.return_parameters.status != hci.HCI_SUCCESS:
-            return None
-
-        response = await host.send_command(
-            hci.HCI_Read_Local_Version_Information_Command(), check_result=True
-        )
-        return (
-            response.return_parameters.hci_subversion << 16
-            | response.return_parameters.lmp_subversion
-        )
-
     @classmethod
     async def driver_info_for_host(cls, host):
         try:
             await host.send_command(
-                hci.HCI_Reset_Command(),
+                HCI_Reset_Command(),
                 check_result=True,
                 response_timeout=cls.POST_RESET_DELAY,
             )
             host.ready = True  # Needed to let the host know the controller is ready.
         except asyncio.exceptions.TimeoutError:
             logger.warning("timeout waiting for hci reset, retrying")
-            await host.send_command(hci.HCI_Reset_Command(), check_result=True)
+            await host.send_command(HCI_Reset_Command(), check_result=True)
             host.ready = True
 
-        command = hci.HCI_Read_Local_Version_Information_Command()
+        command = HCI_Read_Local_Version_Information_Command()
         response = await host.send_command(command, check_result=True)
         if response.command_opcode != command.op_code:
             logger.error("failed to probe local version information")
@@ -605,9 +596,9 @@ class Driver(common.Driver):
             response = await self.host.send_command(
                 HCI_RTK_Read_ROM_Version_Command(), check_result=True
             )
-            if response.return_parameters.status != hci.HCI_SUCCESS:
+            if response.return_parameters.status != HCI_SUCCESS:
                 logger.warning("can't get ROM version")
-                return None
+                return
             rom_version = response.return_parameters.version
             logger.debug(f"ROM version before download: {rom_version:04X}")
         else:
@@ -615,14 +606,13 @@ class Driver(common.Driver):
 
         firmware = Firmware(self.firmware)
         logger.debug(f"firmware: project_id=0x{firmware.project_id:04X}")
-        logger.debug(f"firmware: version=0x{firmware.version:04X}")
         for patch in firmware.patches:
             if patch[0] == rom_version + 1:
                 logger.debug(f"using patch {patch[0]}")
                 break
         else:
             logger.warning("no valid patch found for rom version {rom_version}")
-            return None
+            return
 
         # Append the config if there is one.
         if self.config:
@@ -644,8 +634,9 @@ class Driver(common.Driver):
             fragment = payload[fragment_offset : fragment_offset + RTK_FRAGMENT_LENGTH]
             logger.debug(f"downloading fragment {fragment_index}")
             await self.host.send_command(
-                HCI_RTK_Download_Command(index=download_index, payload=fragment),
-                check_result=True,
+                HCI_RTK_Download_Command(
+                    index=download_index, payload=fragment, check_result=True
+                )
             )
 
         logger.debug("download complete!")
@@ -654,13 +645,11 @@ class Driver(common.Driver):
         response = await self.host.send_command(
             HCI_RTK_Read_ROM_Version_Command(), check_result=True
         )
-        if response.return_parameters.status != hci.HCI_SUCCESS:
+        if response.return_parameters.status != HCI_SUCCESS:
             logger.warning("can't get ROM version")
         else:
             rom_version = response.return_parameters.version
-            logger.debug(f"ROM version after download: {rom_version:02X}")
-
-        return firmware.version
+            logger.debug(f"ROM version after download: {rom_version:04X}")
 
     async def download_firmware(self):
         if self.driver_info.rom == RTK_ROM_LMP_8723A:
@@ -679,7 +668,7 @@ class Driver(common.Driver):
 
     async def init_controller(self):
         await self.download_firmware()
-        await self.host.send_command(hci.HCI_Reset_Command(), check_result=True)
+        await self.host.send_command(HCI_Reset_Command(), check_result=True)
         logger.info(f"loaded FW image {self.driver_info.fw_name}")
 
 

@@ -17,6 +17,8 @@
 # -----------------------------------------------------------------------------
 from __future__ import annotations
 import asyncio
+import asyncio.subprocess
+import os
 import logging
 from typing import Optional, Union
 
@@ -61,7 +63,6 @@ from bumble.hci import Address, HCI_CONNECTION_ALREADY_EXISTS_ERROR, HCI_Constan
 from bumble.pairing import PairingConfig
 from bumble.transport import open_transport
 from bumble.utils import AsyncRunner
-import bumble.logging
 
 
 # -----------------------------------------------------------------------------
@@ -598,7 +599,7 @@ def play(context, address, audio_format, audio_file):
 
 # -----------------------------------------------------------------------------
 def main():
-    bumble.logging.setup_basic_logging("WARNING")
+    logging.basicConfig(level=os.environ.get("BUMBLE_LOGLEVEL", "WARNING").upper())
     player_cli()
 
 

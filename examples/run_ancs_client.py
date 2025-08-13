@@ -17,19 +17,21 @@
 # -----------------------------------------------------------------------------
 import asyncio
 import sys
-
+import os
+import logging
 from bumble.colors import color
+
 from bumble.device import Device, Peer
 from bumble.transport import open_transport
 from bumble.profiles.ancs import (
     AncsClient,
+    AppAttribute,
     AppAttributeId,
     EventFlags,
     EventId,
     Notification,
     NotificationAttributeId,
 )
-import bumble.logging
 
 
 # -----------------------------------------------------------------------------
@@ -209,5 +211,5 @@ async def main() -> None:
 
 
 # -----------------------------------------------------------------------------
-bumble.logging.setup_basic_logging('DEBUG')
+logging.basicConfig(level=os.environ.get('BUMBLE_LOGLEVEL', 'INFO').upper())
 asyncio.run(main())

@@ -17,19 +17,18 @@
 # -----------------------------------------------------------------------------
 import asyncio
 import sys
+import os
 import logging
-from typing import Optional
-
 import websockets
+
+from typing import Optional
 
 from bumble import decoder
 from bumble import gatt
 from bumble.core import AdvertisingData
 from bumble.device import Device, AdvertisingParameters
-from bumble.transport import open_transport
+from bumble.transport import open_transport_or_link
 from bumble.profiles import asha
-import bumble.logging
-
 
 ws_connection: Optional[websockets.WebSocketServerProtocol] = None
 g722_decoder = decoder.G722Decoder()
@@ -51,7 +50,7 @@ async def main() -> None:
         print('example: python run_asha_sink.py device1.json usb:0')
         return
 
-    async with await open_transport(sys.argv[2]) as hci_transport:
+    async with await open_transport_or_link(sys.argv[2]) as hci_transport:
         device = Device.from_config_file_with_hci(
             sys.argv[1], hci_transport.source, hci_transport.sink
         )
@@ -112,5 +111,9 @@ async def main() -> None:
 
 
 # -----------------------------------------------------------------------------
-bumble.logging.setup_basic_logging('DEBUG')
+logging.basicConfig(
+    level=os.environ.get('BUMBLE_LOGLEVEL', 'DEBUG').upper(),
+    format='%(asctime)s.%(msecs)03d %(levelname)s %(module)s - %(funcName)s: %(message)s',
+    datefmt='%Y-%m-%d %H:%M:%S',
+)
 asyncio.run(main())

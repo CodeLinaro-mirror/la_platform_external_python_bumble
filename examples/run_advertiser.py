@@ -16,14 +16,15 @@
 # Imports
 # -----------------------------------------------------------------------------
 import asyncio
+import logging
 import sys
+import os
 import struct
 
 from bumble.core import AdvertisingData
 from bumble.device import AdvertisingType, Device
 from bumble.hci import Address
-from bumble.transport import open_transport
-import bumble.logging
+from bumble.transport import open_transport_or_link
 
 
 # -----------------------------------------------------------------------------
@@ -49,7 +50,7 @@ async def main() -> None:
         target = None
 
     print('<<< connecting to HCI...')
-    async with await open_transport(sys.argv[2]) as hci_transport:
+    async with await open_transport_or_link(sys.argv[2]) as hci_transport:
         print('<<< connected')
 
         device = Device.from_config_file_with_hci(
@@ -71,5 +72,5 @@ async def main() -> None:
 
 
 # -----------------------------------------------------------------------------
-bumble.logging.setup_basic_logging('DEBUG')
+logging.basicConfig(level=os.environ.get('BUMBLE_LOGLEVEL', 'DEBUG').upper())
 asyncio.run(main())

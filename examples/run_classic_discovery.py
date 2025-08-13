@@ -17,13 +17,13 @@
 # -----------------------------------------------------------------------------
 import asyncio
 import sys
-
+import os
+import logging
 from bumble.colors import color
 from bumble.device import Device
 from bumble.hci import Address
-from bumble.transport import open_transport
+from bumble.transport import open_transport_or_link
 from bumble.core import DeviceClass
-import bumble.logging
 
 
 # -----------------------------------------------------------------------------
@@ -60,7 +60,7 @@ async def main() -> None:
         return
 
     print('<<< connecting to HCI...')
-    async with await open_transport(sys.argv[1]) as hci_transport:
+    async with await open_transport_or_link(sys.argv[1]) as hci_transport:
         print('<<< connected')
 
         device = Device.with_hci(
@@ -77,5 +77,5 @@ async def main() -> None:
 
 
 # -----------------------------------------------------------------------------
-bumble.logging.setup_basic_logging('DEBUG')
+logging.basicConfig(level=os.environ.get('BUMBLE_LOGLEVEL', 'DEBUG').upper())
 asyncio.run(main())

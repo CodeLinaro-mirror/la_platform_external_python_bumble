@@ -16,15 +16,15 @@
 # Imports
 # -----------------------------------------------------------------------------
 import asyncio
-
+import os
+import logging
 import click
 
 import bumble.core
 from bumble.colors import color
 from bumble.device import Device, Peer
 from bumble.gatt import show_services
-from bumble.transport import open_transport
-import bumble.logging
+from bumble.transport import open_transport_or_link
 
 
 # -----------------------------------------------------------------------------
@@ -60,7 +60,7 @@ async def dump_gatt_db(peer, done):
 
 # -----------------------------------------------------------------------------
 async def async_main(device_config, encrypt, transport, address_or_name):
-    async with await open_transport(transport) as (hci_source, hci_sink):
+    async with await open_transport_or_link(transport) as (hci_source, hci_sink):
 
         # Create a device
         if device_config:
@@ -112,7 +112,7 @@ def main(device_config, encrypt, transport, address_or_name):
     Dump the GATT database on a remote device. If ADDRESS_OR_NAME is not specified,
     wait for an incoming connection.
     """
-    bumble.logging.setup_basic_logging()
+    logging.basicConfig(level=os.environ.get('BUMBLE_LOGLEVEL', 'INFO').upper())
     asyncio.run(async_main(device_config, encrypt, transport, address_or_name))
 
 

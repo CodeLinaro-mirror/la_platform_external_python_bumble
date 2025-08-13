@@ -16,16 +16,17 @@
 # Imports
 # -----------------------------------------------------------------------------
 import asyncio
+import os
+import logging
 import click
 
 from bumble.colors import color
 from bumble.device import Device
-from bumble.transport import open_transport
+from bumble.transport import open_transport_or_link
 from bumble.keys import JsonKeyStore
 from bumble.smp import AddressResolver
 from bumble.device import Advertisement
 from bumble.hci import Address, HCI_Constant, HCI_LE_1M_PHY, HCI_LE_CODED_PHY
-import bumble.logging
 
 
 # -----------------------------------------------------------------------------
@@ -126,7 +127,7 @@ async def scan(
     transport,
 ):
     print('<<< connecting to HCI...')
-    async with await open_transport(transport) as (hci_source, hci_sink):
+    async with await open_transport_or_link(transport) as (hci_source, hci_sink):
         print('<<< connected')
 
         if device_config:
@@ -236,7 +237,7 @@ def main(
     device_config,
     transport,
 ):
-    bumble.logging.setup_basic_logging('WARNING')
+    logging.basicConfig(level=os.environ.get('BUMBLE_LOGLEVEL', 'WARNING').upper())
     asyncio.run(
         scan(
             min_rssi,

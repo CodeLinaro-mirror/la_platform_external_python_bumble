@@ -26,13 +26,18 @@ from __future__ import annotations
 import logging
 import asyncio
 import enum
+import secrets
 from dataclasses import dataclass
 from typing import (
     TYPE_CHECKING,
     Any,
     Awaitable,
     Callable,
+    Dict,
+    List,
     Optional,
+    Tuple,
+    Type,
     cast,
 )
 
@@ -205,7 +210,7 @@ class SMP_Command:
     See Bluetooth spec @ Vol 3, Part H - 3 SECURITY MANAGER PROTOCOL
     '''
 
-    smp_classes: dict[int, type[SMP_Command]] = {}
+    smp_classes: Dict[int, Type[SMP_Command]] = {}
     fields: Any
     code = 0
     name = ''
@@ -249,7 +254,7 @@ class SMP_Command:
 
     @staticmethod
     def key_distribution_str(value: int) -> str:
-        key_types: list[str] = []
+        key_types: List[str] = []
         if value & SMP_ENC_KEY_DISTRIBUTION_FLAG:
             key_types.append('ENC')
         if value & SMP_ID_KEY_DISTRIBUTION_FLAG:
@@ -701,7 +706,7 @@ class Session:
         self.peer_identity_resolving_key = None
         self.peer_bd_addr: Optional[Address] = None
         self.peer_signature_key = None
-        self.peer_expected_distributions: list[type[SMP_Command]] = []
+        self.peer_expected_distributions: List[Type[SMP_Command]] = []
         self.dh_key = b''
         self.confirm_value = None
         self.passkey: Optional[int] = None
@@ -762,9 +767,7 @@ class Session:
 
         # OOB
         self.oob_data_flag = (
-            1
-            if pairing_config.oob and (not self.sc or pairing_config.oob.peer_data)
-            else 0
+            1 if pairing_config.oob and pairing_config.oob.peer_data else 0
         )
 
         # Set up addresses
@@ -811,7 +814,7 @@ class Session:
             self.tk = bytes(16)
 
     @property
-    def pkx(self) -> tuple[bytes, bytes]:
+    def pkx(self) -> Tuple[bytes, bytes]:
         return (self.ecc_key.x[::-1], self.peer_public_key_x)
 
     @property
@@ -823,7 +826,7 @@ class Session:
         return self.pkx[0 if self.is_responder else 1]
 
     @property
-    def nx(self) -> tuple[bytes, bytes]:
+    def nx(self) -> Tuple[bytes, bytes]:
         assert self.peer_random_value
         return (self.r, self.peer_random_value)
 
@@ -897,7 +900,7 @@ class Session:
 
             self.send_pairing_failed(SMP_CONFIRM_VALUE_FAILED_ERROR)
 
-        self.connection.cancel_on_disconnection(prompt())
+        utils.cancel_on_event(self.connection, 'disconnection', prompt())
 
     def prompt_user_for_numeric_comparison(
         self, code: int, next_steps: Callable[[], None]
@@ -916,7 +919,7 @@ class Session:
 
             self.send_pairing_failed(SMP_CONFIRM_VALUE_FAILED_ERROR)
 
-        self.connection.cancel_on_disconnection(prompt())
+        utils.cancel_on_event(self.connection, 'disconnection', prompt())
 
     def prompt_user_for_number(self, next_steps: Callable[[int], None]) -> None:
         async def prompt() -> None:
@@ -933,11 +936,12 @@ class Session:
                 logger.warning(f'exception while prompting: {error}')
                 self.send_pairing_failed(SMP_PASSKEY_ENTRY_FAILED_ERROR)
 
-        self.connection.cancel_on_disconnection(prompt())
+        utils.cancel_on_event(self.connection, 'disconnection', prompt())
 
-    async def display_passkey(self) -> None:
-        # Get the passkey value from the delegate
-        self.passkey = await self.pairing_config.delegate.generate_passkey()
+    def display_passkey(self) -> None:
+        # Generate random Passkey/PIN code
+        self.passkey = secrets.randbelow(1000000)
+        assert self.passkey is not None
         logger.debug(f'Pairing PIN CODE: {self.passkey:06}')
         self.passkey_ready.set()
 
@@ -946,9 +950,14 @@ class Session:
             self.tk = self.passkey.to_bytes(16, byteorder='little')
             logger.debug(f'TK from passkey = {self.tk.hex()}')
 
-        self.connection.cancel_on_disconnection(
-            self.pairing_config.delegate.display_number(self.passkey, digits=6)
-        )
+        try:
+            utils.cancel_on_event(
+                self.connection,
+                'disconnection',
+                self.pairing_config.delegate.display_number(self.passkey, digits=6),
+            )
+        except Exception as error:
+            logger.warning(f'exception while displaying number: {error}')
 
     def input_passkey(self, next_steps: Optional[Callable[[], None]] = None) -> None:
         # Prompt the user for the passkey displayed on the peer
@@ -970,16 +979,9 @@ class Session:
         self, next_steps: Optional[Callable[[], None]] = None
     ) -> None:
         if self.passkey_display:
-
-            async def display_passkey():
-                await self.display_passkey()
-                if next_steps is not None:
-                    next_steps()
-
-            try:
-                self.connection.cancel_on_disconnection(display_passkey())
-            except Exception as error:
-                logger.warning(f'exception while displaying passkey: {error}')
+            self.display_passkey()
+            if next_steps is not None:
+                next_steps()
         else:
             self.input_passkey(next_steps)
 
@@ -1049,7 +1051,7 @@ class Session:
                 )
 
             # Perform the next steps asynchronously in case we need to wait for input
-            self.connection.cancel_on_disconnection(next_steps())
+            utils.cancel_on_event(self.connection, 'disconnection', next_steps())
         else:
             confirm_value = crypto.c1(
                 self.tk,
@@ -1172,8 +1174,8 @@ class Session:
                 self.connection.transport == PhysicalTransport.BR_EDR
                 and self.initiator_key_distribution & SMP_ENC_KEY_DISTRIBUTION_FLAG
             ):
-                self.ctkd_task = self.connection.cancel_on_disconnection(
-                    self.get_link_key_and_derive_ltk()
+                self.ctkd_task = utils.cancel_on_event(
+                    self.connection, 'disconnection', self.get_link_key_and_derive_ltk()
                 )
             elif not self.sc:
                 # Distribute the LTK, EDIV and RAND
@@ -1211,8 +1213,8 @@ class Session:
                 self.connection.transport == PhysicalTransport.BR_EDR
                 and self.responder_key_distribution & SMP_ENC_KEY_DISTRIBUTION_FLAG
             ):
-                self.ctkd_task = self.connection.cancel_on_disconnection(
-                    self.get_link_key_and_derive_ltk()
+                self.ctkd_task = utils.cancel_on_event(
+                    self.connection, 'disconnection', self.get_link_key_and_derive_ltk()
                 )
             # Distribute the LTK, EDIV and RAND
             elif not self.sc:
@@ -1267,7 +1269,7 @@ class Session:
             f'{[c.__name__ for c in self.peer_expected_distributions]}'
         )
 
-    def check_key_distribution(self, command_class: type[SMP_Command]) -> None:
+    def check_key_distribution(self, command_class: Type[SMP_Command]) -> None:
         # First, check that the connection is encrypted
         if not self.connection.is_encrypted:
             logger.warning(
@@ -1304,7 +1306,9 @@ class Session:
 
         # Wait for the pairing process to finish
         assert self.pairing_result
-        await self.connection.cancel_on_disconnection(self.pairing_result)
+        await utils.cancel_on_event(
+            self.connection, 'disconnection', self.pairing_result
+        )
 
     def on_disconnection(self, _: int) -> None:
         self.connection.remove_listener(
@@ -1325,7 +1329,7 @@ class Session:
         if self.is_initiator:
             self.distribute_keys()
 
-        self.connection.cancel_on_disconnection(self.on_pairing())
+        utils.cancel_on_event(self.connection, 'disconnection', self.on_pairing())
 
     def on_connection_encryption_change(self) -> None:
         if self.connection.is_encrypted and not self.completed:
@@ -1436,8 +1440,10 @@ class Session:
     def on_smp_pairing_request_command(
         self, command: SMP_Pairing_Request_Command
     ) -> None:
-        self.connection.cancel_on_disconnection(
-            self.on_smp_pairing_request_command_async(command)
+        utils.cancel_on_event(
+            self.connection,
+            'disconnection',
+            self.on_smp_pairing_request_command_async(command),
         )
 
     async def on_smp_pairing_request_command_async(
@@ -1501,7 +1507,7 @@ class Session:
         # Display a passkey if we need to
         if not self.sc:
             if self.pairing_method == PairingMethod.PASSKEY and self.passkey_display:
-                await self.display_passkey()
+                self.display_passkey()
 
         # Respond
         self.send_pairing_response_command()
@@ -1571,12 +1577,11 @@ class Session:
         if self.pairing_method == PairingMethod.CTKD_OVER_CLASSIC:
             # Authentication is already done in SMP, so remote shall start keys distribution immediately
             return
-
-        if self.sc:
-            self.send_public_key_command()
-
+        elif self.sc:
             if self.pairing_method == PairingMethod.PASSKEY:
                 self.display_or_input_passkey()
+
+            self.send_public_key_command()
         else:
             if self.pairing_method == PairingMethod.PASSKEY:
                 self.display_or_input_passkey(self.send_pairing_confirm_command)
@@ -1684,7 +1689,7 @@ class Session:
                 ):
                     return
             elif self.pairing_method == PairingMethod.PASSKEY:
-                assert self.passkey is not None and self.confirm_value is not None
+                assert self.passkey and self.confirm_value
                 # Check that the random value matches what was committed to earlier
                 confirm_verifier = crypto.f4(
                     self.pkb,
@@ -1713,7 +1718,7 @@ class Session:
             ):
                 self.send_pairing_random_command()
             elif self.pairing_method == PairingMethod.PASSKEY:
-                assert self.passkey is not None and self.confirm_value is not None
+                assert self.passkey and self.confirm_value
                 # Check that the random value matches what was committed to earlier
                 confirm_verifier = crypto.f4(
                     self.pka,
@@ -1750,7 +1755,7 @@ class Session:
             ra = bytes(16)
             rb = ra
         elif self.pairing_method == PairingMethod.PASSKEY:
-            assert self.passkey is not None
+            assert self.passkey
             ra = self.passkey.to_bytes(16, byteorder='little')
             rb = ra
         elif self.pairing_method == PairingMethod.OOB:
@@ -1849,23 +1854,19 @@ class Session:
             elif self.pairing_method == PairingMethod.PASSKEY:
                 self.send_pairing_confirm_command()
         else:
+            if self.pairing_method == PairingMethod.PASSKEY:
+                self.display_or_input_passkey()
+
             # Send our public key back to the initiator
             self.send_public_key_command()
 
-            def next_steps() -> None:
-
-                if self.pairing_method in (
-                    PairingMethod.JUST_WORKS,
-                    PairingMethod.NUMERIC_COMPARISON,
-                    PairingMethod.OOB,
-                ):
-                    # We can now send the confirmation value
-                    self.send_pairing_confirm_command()
-
-            if self.pairing_method == PairingMethod.PASSKEY:
-                self.display_or_input_passkey(next_steps)
-            else:
-                next_steps()
+            if self.pairing_method in (
+                PairingMethod.JUST_WORKS,
+                PairingMethod.NUMERIC_COMPARISON,
+                PairingMethod.OOB,
+            ):
+                # We can now send the confirmation value
+                self.send_pairing_confirm_command()
 
     def on_smp_pairing_dhkey_check_command(
         self, command: SMP_Pairing_DHKey_Check_Command
@@ -1887,7 +1888,7 @@ class Session:
                     self.wait_before_continuing = None
                     self.send_pairing_dhkey_check_command()
 
-                self.connection.cancel_on_disconnection(next_steps())
+                utils.cancel_on_event(self.connection, 'disconnection', next_steps())
             else:
                 self.send_pairing_dhkey_check_command()
         else:
@@ -1937,9 +1938,9 @@ class Manager(utils.EventEmitter):
     '''
 
     device: Device
-    sessions: dict[int, Session]
+    sessions: Dict[int, Session]
     pairing_config_factory: Callable[[Connection], PairingConfig]
-    session_proxy: type[Session]
+    session_proxy: Type[Session]
     _ecc_key: Optional[crypto.EccKey]
 
     def __init__(

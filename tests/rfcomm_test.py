@@ -17,6 +17,7 @@
 # -----------------------------------------------------------------------------
 import asyncio
 import pytest
+from typing import List
 
 from . import test_utils
 from bumble import core
@@ -72,7 +73,7 @@ async def test_connection_and_disconnection() -> None:
     multiplexer = await Client(devices.connections[1]).start()
     dlcs = await asyncio.gather(accept_future, multiplexer.open_dlc(channel))
 
-    queues: list[asyncio.Queue] = [asyncio.Queue(), asyncio.Queue()]
+    queues: List[asyncio.Queue] = [asyncio.Queue(), asyncio.Queue()]
     for dlc, queue in zip(dlcs, queues):
         dlc.sink = queue.put_nowait
 

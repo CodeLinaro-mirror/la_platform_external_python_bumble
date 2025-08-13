@@ -17,9 +17,11 @@
 # -----------------------------------------------------------------------------
 import asyncio
 import sys
+import os
+import logging
 
 from bumble.device import Device, Connection
-from bumble.transport import open_transport
+from bumble.transport import open_transport_or_link
 from bumble.att import ATT_Error, ATT_INSUFFICIENT_ENCRYPTION_ERROR
 from bumble.gatt import (
     Service,
@@ -30,7 +32,6 @@ from bumble.gatt import (
     GATT_MANUFACTURER_NAME_STRING_CHARACTERISTIC,
     GATT_DEVICE_INFORMATION_SERVICE,
 )
-import bumble.logging
 
 
 # -----------------------------------------------------------------------------
@@ -80,7 +81,7 @@ async def main() -> None:
         return
 
     print('<<< connecting to HCI...')
-    async with await open_transport(sys.argv[2]) as hci_transport:
+    async with await open_transport_or_link(sys.argv[2]) as hci_transport:
         print('<<< connected')
 
         # Create a device to manage the host
@@ -151,5 +152,5 @@ async def main() -> None:
 
 
 # -----------------------------------------------------------------------------
-bumble.logging.setup_basic_logging('DEBUG')
+logging.basicConfig(level=os.environ.get('BUMBLE_LOGLEVEL', 'DEBUG').upper())
 asyncio.run(main())

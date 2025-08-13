@@ -16,14 +16,16 @@
 # Imports
 # -----------------------------------------------------------------------------
 import asyncio
+import logging
 import sys
-
-from bumble.device import Device, CigParameters, CisLink, Connection
+import os
+from bumble import utils
+from bumble.device import Device, Connection
 from bumble.hci import (
     OwnAddressType,
 )
-from bumble.transport import open_transport
-import bumble.logging
+
+from bumble.transport import open_transport_or_link
 
 
 # -----------------------------------------------------------------------------
@@ -38,7 +40,7 @@ async def main() -> None:
 
     print('<<< connecting to HCI...')
     hci_transports = await asyncio.gather(
-        open_transport(sys.argv[2]), open_transport(sys.argv[3])
+        open_transport_or_link(sys.argv[2]), open_transport_or_link(sys.argv[3])
     )
     print('<<< connected')
 
@@ -59,39 +61,29 @@ async def main() -> None:
         devices[0].random_address, own_address_type=OwnAddressType.RANDOM
     )
 
+    cid_ids = [2, 3]
     cis_handles = await devices[1].setup_cig(
-        CigParameters(
-            cig_id=1,
-            cis_parameters=[
-                CigParameters.CisParameters(
-                    cis_id=2,
-                    max_sdu_c_to_p=120,
-                    max_sdu_p_to_c=0,
-                    rtn_c_to_p=13,
-                    rtn_p_to_c=13,
-                ),
-                CigParameters.CisParameters(
-                    cis_id=3,
-                    max_sdu_c_to_p=120,
-                    max_sdu_p_to_c=0,
-                    rtn_c_to_p=13,
-                    rtn_p_to_c=13,
-                ),
-            ],
-            sdu_interval_c_to_p=10000,
-            sdu_interval_p_to_c=255,
-            framing=CigParameters.Framing.UNFRAMED,
-            max_transport_latency_c_to_p=100,
-            max_transport_latency_p_to_c=5,
-        ),
+        cig_id=1,
+        cis_id=cid_ids,
+        sdu_interval=(10000, 255),
+        framing=0,
+        max_sdu=(120, 0),
+        retransmission_number=13,
+        max_transport_latency=(100, 5),
     )
 
-    def on_cis_request(connection: Connection, cis_link: CisLink):
-        connection.cancel_on_disconnection(devices[0].accept_cis_request(cis_link))
+    def on_cis_request(
+        connection: Connection, cis_handle: int, _cig_id: int, _cis_id: int
+    ):
+        utils.cancel_on_event(
+            connection, 'disconnection', devices[0].accept_cis_request(cis_handle)
+        )
 
     devices[0].on('cis_request', on_cis_request)
 
-    cis_links = await devices[1].create_cis([(cis, connection) for cis in cis_handles])
+    cis_links = await devices[1].create_cis(
+        [(cis, connection.handle) for cis in cis_handles]
+    )
 
     for cis_link in cis_links:
         await cis_link.disconnect()
@@ -102,5 +94,5 @@ async def main() -> None:
 
 
 # -----------------------------------------------------------------------------
-bumble.logging.setup_basic_logging('DEBUG')
+logging.basicConfig(level=os.environ.get('BUMBLE_LOGLEVEL', 'DEBUG').upper())
 asyncio.run(main())

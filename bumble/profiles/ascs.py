@@ -18,13 +18,10 @@
 # -----------------------------------------------------------------------------
 from __future__ import annotations
 
-from dataclasses import dataclass, field
 import enum
-import functools
 import logging
 import struct
-from typing import Any, Optional, Union, TypeVar
-from collections.abc import Sequence
+from typing import Any, Dict, List, Optional, Sequence, Tuple, Type, Union
 
 from bumble import utils
 from bumble import colors
@@ -51,11 +48,11 @@ class ASE_Operation:
     See Audio Stream Control Service - 5 ASE Control operations.
     '''
 
-    classes: dict[int, type[ASE_Operation]] = {}
-    op_code: Opcode
+    classes: Dict[int, Type[ASE_Operation]] = {}
+    op_code: int
     name: str
     fields: Optional[Sequence[Any]] = None
-    ase_id: Sequence[int]
+    ase_id: List[int]
 
     class Opcode(enum.IntEnum):
         # fmt: off
@@ -68,30 +65,51 @@ class ASE_Operation:
         UPDATE_METADATA      = 0x07
         RELEASE              = 0x08
 
-    @classmethod
-    def from_bytes(cls, pdu: bytes) -> ASE_Operation:
+    @staticmethod
+    def from_bytes(pdu: bytes) -> ASE_Operation:
         op_code = pdu[0]
 
-        clazz = ASE_Operation.classes[op_code]
-        return clazz(
-            **hci.HCI_Object.dict_from_bytes(pdu, offset=1, fields=clazz.fields)
-        )
+        cls = ASE_Operation.classes.get(op_code)
+        if cls is None:
+            instance = ASE_Operation(pdu)
+            instance.name = ASE_Operation.Opcode(op_code).name
+            instance.op_code = op_code
+            return instance
+        self = cls.__new__(cls)
+        ASE_Operation.__init__(self, pdu)
+        if self.fields is not None:
+            self.init_from_bytes(pdu, 1)
+        return self
 
-    _OP = TypeVar("_OP", bound="ASE_Operation")
+    @staticmethod
+    def subclass(fields):
+        def inner(cls: Type[ASE_Operation]):
+            try:
+                operation = ASE_Operation.Opcode[cls.__name__[4:].upper()]
+                cls.name = operation.name
+                cls.op_code = operation
+            except:
+                raise KeyError(f'PDU name {cls.name} not found in Ase_Operation.Opcode')
+            cls.fields = fields
 
-    @classmethod
-    def subclass(cls, clazz: type[_OP]) -> type[_OP]:
-        clazz.name = f"ASE_{clazz.op_code.name.upper()}"
-        clazz.fields = hci.HCI_Object.fields_from_dataclass(clazz)
-        # Register a factory for this class
-        ASE_Operation.classes[clazz.op_code] = clazz
-        return clazz
+            # Register a factory for this class
+            ASE_Operation.classes[cls.op_code] = cls
 
-    @functools.cached_property
-    def pdu(self) -> bytes:
-        return bytes([self.op_code]) + hci.HCI_Object.dict_to_bytes(
-            self.__dict__, self.fields
-        )
+            return cls
+
+        return inner
+
+    def __init__(self, pdu: Optional[bytes] = None, **kwargs) -> None:
+        if self.fields is not None and kwargs:
+            hci.HCI_Object.init_from_fields(self, self.fields, kwargs)
+        if pdu is None:
+            pdu = bytes([self.op_code]) + hci.HCI_Object.dict_to_bytes(
+                kwargs, self.fields
+            )
+        self.pdu = pdu
+
+    def init_from_bytes(self, pdu: bytes, offset: int):
+        return hci.HCI_Object.init_from_bytes(self, pdu, offset, self.fields)
 
     def __bytes__(self) -> bytes:
         return self.pdu
@@ -106,127 +124,104 @@ class ASE_Operation:
         return result
 
 
-@ASE_Operation.subclass
-@dataclass
+@ASE_Operation.subclass(
+    [
+        [
+            ('ase_id', 1),
+            ('target_latency', 1),
+            ('target_phy', 1),
+            ('codec_id', hci.CodingFormat.parse_from_bytes),
+            ('codec_specific_configuration', 'v'),
+        ],
+    ]
+)
 class ASE_Config_Codec(ASE_Operation):
     '''
     See Audio Stream Control Service 5.1 - Config Codec Operation
     '''
 
-    op_code = ASE_Operation.Opcode.CONFIG_CODEC
-
-    ase_id: Sequence[int] = field(metadata=hci.metadata(1, list_begin=True))
-    target_latency: Sequence[int] = field(metadata=hci.metadata(1))
-    target_phy: Sequence[int] = field(metadata=hci.metadata(1))
-    codec_id: Sequence[hci.CodingFormat] = field(
-        metadata=hci.metadata(hci.CodingFormat.parse_from_bytes)
-    )
-    codec_specific_configuration: Sequence[bytes] = field(
-        metadata=hci.metadata('v', list_end=True)
-    )
+    target_latency: List[int]
+    target_phy: List[int]
+    codec_id: List[hci.CodingFormat]
+    codec_specific_configuration: List[bytes]
 
 
-@ASE_Operation.subclass
-@dataclass
+@ASE_Operation.subclass(
+    [
+        [
+            ('ase_id', 1),
+            ('cig_id', 1),
+            ('cis_id', 1),
+            ('sdu_interval', 3),
+            ('framing', 1),
+            ('phy', 1),
+            ('max_sdu', 2),
+            ('retransmission_number', 1),
+            ('max_transport_latency', 2),
+            ('presentation_delay', 3),
+        ],
+    ]
+)
 class ASE_Config_QOS(ASE_Operation):
     '''
     See Audio Stream Control Service 5.2 - Config Qos Operation
     '''
 
-    op_code = ASE_Operation.Opcode.CONFIG_QOS
-
-    ase_id: Sequence[int] = field(metadata=hci.metadata(1, list_begin=True))
-    cig_id: Sequence[int] = field(metadata=hci.metadata(1))
-    cis_id: Sequence[int] = field(metadata=hci.metadata(1))
-    sdu_interval: Sequence[int] = field(metadata=hci.metadata(3))
-    framing: Sequence[int] = field(metadata=hci.metadata(1))
-    phy: Sequence[int] = field(metadata=hci.metadata(1))
-    max_sdu: Sequence[int] = field(metadata=hci.metadata(2))
-    retransmission_number: Sequence[int] = field(metadata=hci.metadata(1))
-    max_transport_latency: Sequence[int] = field(metadata=hci.metadata(2))
-    presentation_delay: Sequence[int] = field(metadata=hci.metadata(3, list_end=True))
+    cig_id: List[int]
+    cis_id: List[int]
+    sdu_interval: List[int]
+    framing: List[int]
+    phy: List[int]
+    max_sdu: List[int]
+    retransmission_number: List[int]
+    max_transport_latency: List[int]
+    presentation_delay: List[int]
 
 
-@ASE_Operation.subclass
-@dataclass
+@ASE_Operation.subclass([[('ase_id', 1), ('metadata', 'v')]])
 class ASE_Enable(ASE_Operation):
     '''
     See Audio Stream Control Service 5.3 - Enable Operation
     '''
 
-    op_code = ASE_Operation.Opcode.ENABLE
-
-    ase_id: Sequence[int] = field(metadata=hci.metadata(1, list_begin=True))
-    metadata: Sequence[bytes] = field(metadata=hci.metadata('v', list_end=True))
+    metadata: bytes
 
 
-@ASE_Operation.subclass
-@dataclass
+@ASE_Operation.subclass([[('ase_id', 1)]])
 class ASE_Receiver_Start_Ready(ASE_Operation):
     '''
     See Audio Stream Control Service 5.4 - Receiver Start Ready Operation
     '''
 
-    op_code = ASE_Operation.Opcode.RECEIVER_START_READY
 
-    ase_id: Sequence[int] = field(
-        metadata=hci.metadata(1, list_begin=True, list_end=True)
-    )
-
-
-@ASE_Operation.subclass
-@dataclass
+@ASE_Operation.subclass([[('ase_id', 1)]])
 class ASE_Disable(ASE_Operation):
     '''
     See Audio Stream Control Service 5.5 - Disable Operation
     '''
 
-    op_code = ASE_Operation.Opcode.DISABLE
 
-    ase_id: Sequence[int] = field(
-        metadata=hci.metadata(1, list_begin=True, list_end=True)
-    )
-
-
-@ASE_Operation.subclass
-@dataclass
+@ASE_Operation.subclass([[('ase_id', 1)]])
 class ASE_Receiver_Stop_Ready(ASE_Operation):
     '''
     See Audio Stream Control Service 5.6 - Receiver Stop Ready Operation
     '''
 
-    op_code = ASE_Operation.Opcode.RECEIVER_STOP_READY
 
-    ase_id: Sequence[int] = field(
-        metadata=hci.metadata(1, list_begin=True, list_end=True)
-    )
-
-
-@ASE_Operation.subclass
-@dataclass
+@ASE_Operation.subclass([[('ase_id', 1), ('metadata', 'v')]])
 class ASE_Update_Metadata(ASE_Operation):
     '''
     See Audio Stream Control Service 5.7 - Update Metadata Operation
     '''
 
-    op_code = ASE_Operation.Opcode.UPDATE_METADATA
-
-    ase_id: Sequence[int] = field(metadata=hci.metadata(1, list_begin=True))
-    metadata: Sequence[bytes] = field(metadata=hci.metadata('v', list_end=True))
+    metadata: List[bytes]
 
 
-@ASE_Operation.subclass
-@dataclass
+@ASE_Operation.subclass([[('ase_id', 1)]])
 class ASE_Release(ASE_Operation):
     '''
     See Audio Stream Control Service 5.8 - Release Operation
     '''
-
-    op_code = ASE_Operation.Opcode.RELEASE
-
-    ase_id: Sequence[int] = field(
-        metadata=hci.metadata(1, list_begin=True, list_end=True)
-    )
 
 
 class AseResponseCode(enum.IntEnum):
@@ -343,16 +338,22 @@ class AseStateMachine(gatt.Characteristic):
             self.service.device.EVENT_CIS_ESTABLISHMENT, self.on_cis_establishment
         )
 
-    def on_cis_request(self, cis_link: device.CisLink) -> None:
+    def on_cis_request(
+        self,
+        acl_connection: device.Connection,
+        cis_handle: int,
+        cig_id: int,
+        cis_id: int,
+    ) -> None:
         if (
-            cis_link.cig_id == self.cig_id
-            and cis_link.cis_id == self.cis_id
+            cig_id == self.cig_id
+            and cis_id == self.cis_id
             and self.state == self.State.ENABLING
         ):
             utils.cancel_on_event(
-                cis_link.acl_connection,
+                acl_connection,
                 'flush',
-                self.service.device.accept_cis_request(cis_link),
+                self.service.device.accept_cis_request(cis_handle),
             )
 
     def on_cis_establishment(self, cis_link: device.CisLink) -> None:
@@ -383,7 +384,7 @@ class AseStateMachine(gatt.Characteristic):
         target_phy: int,
         codec_id: hci.CodingFormat,
         codec_specific_configuration: bytes,
-    ) -> tuple[AseResponseCode, AseReasonCode]:
+    ) -> Tuple[AseResponseCode, AseReasonCode]:
         if self.state not in (
             self.State.IDLE,
             self.State.CODEC_CONFIGURED,
@@ -419,7 +420,7 @@ class AseStateMachine(gatt.Characteristic):
         retransmission_number: int,
         max_transport_latency: int,
         presentation_delay: int,
-    ) -> tuple[AseResponseCode, AseReasonCode]:
+    ) -> Tuple[AseResponseCode, AseReasonCode]:
         if self.state not in (
             AseStateMachine.State.CODEC_CONFIGURED,
             AseStateMachine.State.QOS_CONFIGURED,
@@ -443,7 +444,7 @@ class AseStateMachine(gatt.Characteristic):
 
         return (AseResponseCode.SUCCESS, AseReasonCode.NONE)
 
-    def on_enable(self, metadata: bytes) -> tuple[AseResponseCode, AseReasonCode]:
+    def on_enable(self, metadata: bytes) -> Tuple[AseResponseCode, AseReasonCode]:
         if self.state != AseStateMachine.State.QOS_CONFIGURED:
             return (
                 AseResponseCode.INVALID_ASE_STATE_MACHINE_TRANSITION,
@@ -452,20 +453,10 @@ class AseStateMachine(gatt.Characteristic):
 
         self.metadata = le_audio.Metadata.from_bytes(metadata)
         self.state = self.State.ENABLING
-        # CIS could be established before enable.
-        if cis_link := next(
-            (
-                cis_link
-                for cis_link in self.service.device.cis_links.values()
-                if cis_link.cig_id == self.cig_id and cis_link.cis_id == self.cis_id
-            ),
-            None,
-        ):
-            self.on_cis_establishment(cis_link)
 
         return (AseResponseCode.SUCCESS, AseReasonCode.NONE)
 
-    def on_receiver_start_ready(self) -> tuple[AseResponseCode, AseReasonCode]:
+    def on_receiver_start_ready(self) -> Tuple[AseResponseCode, AseReasonCode]:
         if self.state != AseStateMachine.State.ENABLING:
             return (
                 AseResponseCode.INVALID_ASE_STATE_MACHINE_TRANSITION,
@@ -474,7 +465,7 @@ class AseStateMachine(gatt.Characteristic):
         self.state = self.State.STREAMING
         return (AseResponseCode.SUCCESS, AseReasonCode.NONE)
 
-    def on_disable(self) -> tuple[AseResponseCode, AseReasonCode]:
+    def on_disable(self) -> Tuple[AseResponseCode, AseReasonCode]:
         if self.state not in (
             AseStateMachine.State.ENABLING,
             AseStateMachine.State.STREAMING,
@@ -489,7 +480,7 @@ class AseStateMachine(gatt.Characteristic):
             self.state = self.State.DISABLING
         return (AseResponseCode.SUCCESS, AseReasonCode.NONE)
 
-    def on_receiver_stop_ready(self) -> tuple[AseResponseCode, AseReasonCode]:
+    def on_receiver_stop_ready(self) -> Tuple[AseResponseCode, AseReasonCode]:
         if (
             self.role != AudioRole.SOURCE
             or self.state != AseStateMachine.State.DISABLING
@@ -503,7 +494,7 @@ class AseStateMachine(gatt.Characteristic):
 
     def on_update_metadata(
         self, metadata: bytes
-    ) -> tuple[AseResponseCode, AseReasonCode]:
+    ) -> Tuple[AseResponseCode, AseReasonCode]:
         if self.state not in (
             AseStateMachine.State.ENABLING,
             AseStateMachine.State.STREAMING,
@@ -515,7 +506,7 @@ class AseStateMachine(gatt.Characteristic):
         self.metadata = le_audio.Metadata.from_bytes(metadata)
         return (AseResponseCode.SUCCESS, AseReasonCode.NONE)
 
-    def on_release(self) -> tuple[AseResponseCode, AseReasonCode]:
+    def on_release(self) -> Tuple[AseResponseCode, AseReasonCode]:
         if self.state == AseStateMachine.State.IDLE:
             return (
                 AseResponseCode.INVALID_ASE_STATE_MACHINE_TRANSITION,
@@ -613,7 +604,7 @@ class AseStateMachine(gatt.Characteristic):
 class AudioStreamControlService(gatt.TemplateService):
     UUID = gatt.GATT_AUDIO_STREAM_CONTROL_SERVICE
 
-    ase_state_machines: dict[int, AseStateMachine]
+    ase_state_machines: Dict[int, AseStateMachine]
     ase_control_point: gatt.Characteristic[bytes]
     _active_client: Optional[device.Connection] = None
 
@@ -658,9 +649,7 @@ class AudioStreamControlService(gatt.TemplateService):
             ase.state = AseStateMachine.State.IDLE
         self._active_client = None
 
-    def on_write_ase_control_point(
-        self, connection: device.Connection, data: bytes
-    ) -> None:
+    def on_write_ase_control_point(self, connection, data):
         if not self._active_client and connection:
             self._active_client = connection
             connection.once('disconnection', self._on_client_disconnected)
@@ -669,7 +658,7 @@ class AudioStreamControlService(gatt.TemplateService):
         responses = []
         logger.debug(f'*** ASCS Write {operation} ***')
 
-        if isinstance(operation, ASE_Config_Codec):
+        if operation.op_code == ASE_Operation.Opcode.CONFIG_CODEC:
             for ase_id, *args in zip(
                 operation.ase_id,
                 operation.target_latency,
@@ -678,7 +667,7 @@ class AudioStreamControlService(gatt.TemplateService):
                 operation.codec_specific_configuration,
             ):
                 responses.append(self.on_operation(operation.op_code, ase_id, args))
-        elif isinstance(operation, ASE_Config_QOS):
+        elif operation.op_code == ASE_Operation.Opcode.CONFIG_QOS:
             for ase_id, *args in zip(
                 operation.ase_id,
                 operation.cig_id,
@@ -692,20 +681,20 @@ class AudioStreamControlService(gatt.TemplateService):
                 operation.presentation_delay,
             ):
                 responses.append(self.on_operation(operation.op_code, ase_id, args))
-        elif isinstance(operation, (ASE_Enable, ASE_Update_Metadata)):
+        elif operation.op_code in (
+            ASE_Operation.Opcode.ENABLE,
+            ASE_Operation.Opcode.UPDATE_METADATA,
+        ):
             for ase_id, *args in zip(
                 operation.ase_id,
                 operation.metadata,
             ):
                 responses.append(self.on_operation(operation.op_code, ase_id, args))
-        elif isinstance(
-            operation,
-            (
-                ASE_Receiver_Start_Ready,
-                ASE_Disable,
-                ASE_Receiver_Stop_Ready,
-                ASE_Release,
-            ),
+        elif operation.op_code in (
+            ASE_Operation.Opcode.RECEIVER_START_READY,
+            ASE_Operation.Opcode.DISABLE,
+            ASE_Operation.Opcode.RECEIVER_STOP_READY,
+            ASE_Operation.Opcode.RELEASE,
         ):
             for ase_id in operation.ase_id:
                 responses.append(self.on_operation(operation.op_code, ase_id, []))
@@ -734,8 +723,8 @@ class AudioStreamControlService(gatt.TemplateService):
 class AudioStreamControlServiceProxy(gatt_client.ProfileServiceProxy):
     SERVICE_CLASS = AudioStreamControlService
 
-    sink_ase: list[gatt_client.CharacteristicProxy[bytes]]
-    source_ase: list[gatt_client.CharacteristicProxy[bytes]]
+    sink_ase: List[gatt_client.CharacteristicProxy[bytes]]
+    source_ase: List[gatt_client.CharacteristicProxy[bytes]]
     ase_control_point: gatt_client.CharacteristicProxy[bytes]
 
     def __init__(self, service_proxy: gatt_client.ServiceProxy):

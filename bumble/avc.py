@@ -18,7 +18,7 @@
 from __future__ import annotations
 import enum
 import struct
-from typing import Union
+from typing import Dict, Type, Union, Tuple
 
 from bumble import core
 from bumble import utils
@@ -213,11 +213,11 @@ class CommandFrame(Frame):
         NOTIFY = 0x03
         GENERAL_INQUIRY = 0x04
 
-    subclasses: dict[Frame.OperationCode, type[CommandFrame]] = {}
+    subclasses: Dict[Frame.OperationCode, Type[CommandFrame]] = {}
     ctype: CommandType
 
     @staticmethod
-    def parse_operands(operands: bytes) -> tuple:
+    def parse_operands(operands: bytes) -> Tuple:
         raise NotImplementedError
 
     def __init__(
@@ -251,11 +251,11 @@ class ResponseFrame(Frame):
         CHANGED = 0x0D
         INTERIM = 0x0F
 
-    subclasses: dict[Frame.OperationCode, type[ResponseFrame]] = {}
+    subclasses: Dict[Frame.OperationCode, Type[ResponseFrame]] = {}
     response: ResponseCode
 
     @staticmethod
-    def parse_operands(operands: bytes) -> tuple:
+    def parse_operands(operands: bytes) -> Tuple:
         raise NotImplementedError
 
     def __init__(
@@ -282,7 +282,7 @@ class VendorDependentFrame:
     vendor_dependent_data: bytes
 
     @staticmethod
-    def parse_operands(operands: bytes) -> tuple:
+    def parse_operands(operands: bytes) -> Tuple:
         return (
             struct.unpack(">I", b"\x00" + operands[:3])[0],
             operands[3:],
@@ -432,7 +432,7 @@ class PassThroughFrame:
     operation_data: bytes
 
     @staticmethod
-    def parse_operands(operands: bytes) -> tuple:
+    def parse_operands(operands: bytes) -> Tuple:
         return (
             PassThroughFrame.StateFlag(operands[0] >> 7),
             PassThroughFrame.OperationId(operands[0] & 0x7F),

@@ -16,12 +16,13 @@
 # Imports
 # -----------------------------------------------------------------------------
 import asyncio
+import logging
 import sys
-import json
-from typing import Optional
-
+import os
 import websockets
+import json
 
+from bumble import utils
 from bumble.core import AdvertisingData
 from bumble.device import (
     Device,
@@ -51,8 +52,9 @@ from bumble.profiles.mcp import (
     MediaControlPointOpcode,
 )
 from bumble.profiles.pacs import PacRecord, PublishedAudioCapabilitiesService
-from bumble.transport import open_transport
-import bumble.logging
+from bumble.transport import open_transport_or_link
+
+from typing import Optional
 
 
 # -----------------------------------------------------------------------------
@@ -62,7 +64,7 @@ async def main() -> None:
         return
 
     print('<<< connecting to HCI...')
-    async with await open_transport(sys.argv[2]) as hci_transport:
+    async with await open_transport_or_link(sys.argv[2]) as hci_transport:
         print('<<< connected')
 
         device = Device.from_config_file_with_hci(
@@ -168,7 +170,7 @@ async def main() -> None:
                     mcp.on('track_position', on_track_position)
                     await mcp.subscribe_characteristics()
 
-            connection.cancel_on_disconnection(on_connection_async())
+            utils.cancel_on_event(connection, 'disconnection', on_connection_async())
 
         device.on('connection', on_connection)
 
@@ -189,5 +191,5 @@ async def main() -> None:
 
 
 # -----------------------------------------------------------------------------
-bumble.logging.setup_basic_logging('DEBUG')
+logging.basicConfig(level=os.environ.get('BUMBLE_LOGLEVEL', 'DEBUG').upper())
 asyncio.run(main())
