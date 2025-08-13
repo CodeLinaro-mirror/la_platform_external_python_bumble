@@ -16,14 +16,15 @@
 # Imports
 # -----------------------------------------------------------------------------
 import asyncio
+import logging
 import sys
-
+import os
 from bumble.core import PhysicalTransport
 from bumble.device import Device, ScoLink
 from bumble.hci import HCI_Enhanced_Setup_Synchronous_Connection_Command
 from bumble.hfp import DefaultCodecParameters, ESCO_PARAMETERS
-from bumble.transport import open_transport
-import bumble.logging
+
+from bumble.transport import open_transport_or_link
 
 
 # -----------------------------------------------------------------------------
@@ -41,7 +42,7 @@ async def main() -> None:
 
     print('<<< connecting to HCI...')
     hci_transports = await asyncio.gather(
-        open_transport(sys.argv[2]), open_transport(sys.argv[3])
+        open_transport_or_link(sys.argv[2]), open_transport_or_link(sys.argv[3])
     )
     print('<<< connected')
 
@@ -82,5 +83,5 @@ async def main() -> None:
 
 
 # -----------------------------------------------------------------------------
-bumble.logging.setup_basic_logging('DEBUG')
+logging.basicConfig(level=os.environ.get('BUMBLE_LOGLEVEL', 'DEBUG').upper())
 asyncio.run(main())

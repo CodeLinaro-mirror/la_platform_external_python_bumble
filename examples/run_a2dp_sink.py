@@ -17,10 +17,12 @@
 # -----------------------------------------------------------------------------
 import asyncio
 import sys
-from typing import Any
+import os
+import logging
+from typing import Any, Dict
 
 from bumble.device import Device
-from bumble.transport import open_transport
+from bumble.transport import open_transport_or_link
 from bumble.core import PhysicalTransport
 from bumble.avdtp import (
     AVDTP_AUDIO_MEDIA_TYPE,
@@ -33,10 +35,8 @@ from bumble.a2dp import (
     A2DP_SBC_CODEC_TYPE,
     SbcMediaCodecInformation,
 )
-import bumble.logging
 
-
-Context: dict[Any, Any] = {'output': None}
+Context: Dict[Any, Any] = {'output': None}
 
 
 # -----------------------------------------------------------------------------
@@ -112,7 +112,7 @@ async def main() -> None:
         return
 
     print('<<< connecting to HCI...')
-    async with await open_transport(sys.argv[2]) as hci_transport:
+    async with await open_transport_or_link(sys.argv[2]) as hci_transport:
         print('<<< connected')
 
         with open(sys.argv[3], 'wb') as sbc_file:
@@ -166,5 +166,5 @@ async def main() -> None:
 
 
 # -----------------------------------------------------------------------------
-bumble.logging.setup_basic_logging('DEBUG')
+logging.basicConfig(level=os.environ.get('BUMBLE_LOGLEVEL', 'DEBUG').upper())
 asyncio.run(main())

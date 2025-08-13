@@ -24,8 +24,12 @@ import warnings
 from typing import (
     Any,
     Awaitable,
+    Dict,
+    Type,
+    Tuple,
     Optional,
     Callable,
+    List,
     AsyncGenerator,
     Iterable,
     Union,
@@ -223,7 +227,7 @@ AVDTP_STATE_NAMES = {
 # -----------------------------------------------------------------------------
 async def find_avdtp_service_with_sdp_client(
     sdp_client: sdp.Client,
-) -> Optional[tuple[int, int]]:
+) -> Optional[Tuple[int, int]]:
     '''
     Find an AVDTP service, using a connected SDP client, and return its version,
     or None if none is found
@@ -253,7 +257,7 @@ async def find_avdtp_service_with_sdp_client(
 # -----------------------------------------------------------------------------
 async def find_avdtp_service_with_connection(
     connection: device.Connection,
-) -> Optional[tuple[int, int]]:
+) -> Optional[Tuple[int, int]]:
     '''
     Find an AVDTP service, for a connection, and return its version,
     or None if none is found
@@ -447,7 +451,7 @@ class ServiceCapabilities:
         service_category: int, service_capabilities_bytes: bytes
     ) -> ServiceCapabilities:
         # Select the appropriate subclass
-        cls: type[ServiceCapabilities]
+        cls: Type[ServiceCapabilities]
         if service_category == AVDTP_MEDIA_CODEC_SERVICE_CATEGORY:
             cls = MediaCodecCapabilities
         else:
@@ -462,7 +466,7 @@ class ServiceCapabilities:
         return instance
 
     @staticmethod
-    def parse_capabilities(payload: bytes) -> list[ServiceCapabilities]:
+    def parse_capabilities(payload: bytes) -> List[ServiceCapabilities]:
         capabilities = []
         while payload:
             service_category = payload[0]
@@ -495,7 +499,7 @@ class ServiceCapabilities:
         self.service_category = service_category
         self.service_capabilities_bytes = service_capabilities_bytes
 
-    def to_string(self, details: Optional[list[str]] = None) -> str:
+    def to_string(self, details: Optional[List[str]] = None) -> str:
         attributes = ','.join(
             [name_or_number(AVDTP_SERVICE_CATEGORY_NAMES, self.service_category)]
             + (details or [])
@@ -608,7 +612,7 @@ class Message:  # pylint:disable=attribute-defined-outside-init
         RESPONSE_REJECT = 3
 
     # Subclasses, by signal identifier and message type
-    subclasses: dict[int, dict[int, type[Message]]] = {}
+    subclasses: Dict[int, Dict[int, Type[Message]]] = {}
     message_type: MessageType
     signal_identifier: int
 
@@ -753,7 +757,7 @@ class Discover_Response(Message):
     See Bluetooth AVDTP spec - 8.6.2 Stream End Point Discovery Response
     '''
 
-    endpoints: list[EndPointInfo]
+    endpoints: List[EndPointInfo]
 
     def init_from_payload(self):
         self.endpoints = []
@@ -1198,10 +1202,10 @@ class DelayReport_Reject(Simple_Reject):
 
 # -----------------------------------------------------------------------------
 class Protocol(utils.EventEmitter):
-    local_endpoints: list[LocalStreamEndPoint]
-    remote_endpoints: dict[int, DiscoveredStreamEndPoint]
-    streams: dict[int, Stream]
-    transaction_results: list[Optional[asyncio.Future[Message]]]
+    local_endpoints: List[LocalStreamEndPoint]
+    remote_endpoints: Dict[int, DiscoveredStreamEndPoint]
+    streams: Dict[int, Stream]
+    transaction_results: List[Optional[asyncio.Future[Message]]]
     channel_connector: Callable[[], Awaitable[l2cap.ClassicChannel]]
 
     EVENT_OPEN = "open"
@@ -1219,7 +1223,7 @@ class Protocol(utils.EventEmitter):
 
     @staticmethod
     async def connect(
-        connection: device.Connection, version: tuple[int, int] = (1, 3)
+        connection: device.Connection, version: Tuple[int, int] = (1, 3)
     ) -> Protocol:
         channel = await connection.create_l2cap_channel(
             spec=l2cap.ClassicChannelSpec(psm=AVDTP_PSM)
@@ -1229,7 +1233,7 @@ class Protocol(utils.EventEmitter):
         return protocol
 
     def __init__(
-        self, l2cap_channel: l2cap.ClassicChannel, version: tuple[int, int] = (1, 3)
+        self, l2cap_channel: l2cap.ClassicChannel, version: Tuple[int, int] = (1, 3)
     ) -> None:
         super().__init__()
         self.l2cap_channel = l2cap_channel
@@ -1498,7 +1502,7 @@ class Protocol(utils.EventEmitter):
 
         return response
 
-    async def start_transaction(self) -> tuple[int, asyncio.Future[Message]]:
+    async def start_transaction(self) -> Tuple[int, asyncio.Future[Message]]:
         # Wait until we can start a new transaction
         await self.transaction_semaphore.acquire()
 
@@ -1699,7 +1703,7 @@ class Protocol(utils.EventEmitter):
 
 # -----------------------------------------------------------------------------
 class Listener(utils.EventEmitter):
-    servers: dict[int, Protocol]
+    servers: Dict[int, Protocol]
 
     EVENT_CONNECTION = "connection"
 
@@ -1731,7 +1735,7 @@ class Listener(utils.EventEmitter):
 
     @classmethod
     def for_device(
-        cls, device: device.Device, version: tuple[int, int] = (1, 3)
+        cls, device: device.Device, version: Tuple[int, int] = (1, 3)
     ) -> Listener:
         listener = Listener(registrar=None, version=version)
         l2cap_server = device.create_l2cap_server(

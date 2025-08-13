@@ -26,7 +26,7 @@ from prompt_toolkit.shortcuts import PromptSession
 from bumble.a2dp import make_audio_sink_service_sdp_records
 from bumble.colors import color
 from bumble.device import Device, Peer
-from bumble.transport import open_transport
+from bumble.transport import open_transport_or_link
 from bumble.pairing import OobData, PairingDelegate, PairingConfig
 from bumble.smp import OobContext, OobLegacyContext
 from bumble.smp import error_name as smp_error_name
@@ -349,7 +349,7 @@ async def pair(
     Waiter.instance = Waiter(linger=linger)
 
     print('<<< connecting to HCI...')
-    async with await open_transport(hci_transport) as (hci_source, hci_sink):
+    async with await open_transport_or_link(hci_transport) as (hci_source, hci_sink):
         print('<<< connected')
 
         # Create a device to manage the host
@@ -402,19 +402,14 @@ async def pair(
         # Create an OOB context if needed
         if oob:
             our_oob_context = OobContext()
-            if oob == '-':
-                shared_data = None
-                legacy_context = OobLegacyContext()
-            else:
-                oob_data = OobData.from_ad(
+            shared_data = (
+                None
+                if oob == '-'
+                else OobData.from_ad(
                     AdvertisingData.from_bytes(bytes.fromhex(oob))
-                )
-                shared_data = oob_data.shared_data
-                legacy_context = oob_data.legacy_context
-                if legacy_context is None and not sc:
-                    print(color('OOB pairing in legacy mode requires TK', 'red'))
-                    return
-
+                ).shared_data
+            )
+            legacy_context = OobLegacyContext()
             oob_contexts = PairingConfig.OobConfig(
                 our_context=our_oob_context,
                 peer_data=shared_data,
@@ -424,9 +419,7 @@ async def pair(
             print(color('@@@ OOB Data:', 'yellow'))
             if shared_data is None:
                 oob_data = OobData(
-                    address=device.random_address,
-                    shared_data=our_oob_context.share(),
-                    legacy_context=(None if sc else legacy_context),
+                    address=device.random_address, shared_data=our_oob_context.share()
                 )
                 print(
                     color(
@@ -434,8 +427,7 @@ async def pair(
                         'yellow',
                     )
                 )
-            if legacy_context:
-                print(color(f'@@@   TK={legacy_context.tk.hex()}', 'yellow'))
+            print(color(f'@@@   TK={legacy_context.tk.hex()}', 'yellow'))
             print(color('@@@-----------------------------------', 'yellow'))
         else:
             oob_contexts = None

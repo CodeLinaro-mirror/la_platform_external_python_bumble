@@ -17,16 +17,17 @@
 # -----------------------------------------------------------------------------
 import asyncio
 import sys
+import os
+import logging
 import struct
 import json
-
 import websockets
-
 from bumble.colors import color
+
 from bumble.core import AdvertisingData
 from bumble.device import Device, Connection, Peer
 from bumble.utils import AsyncRunner
-from bumble.transport import open_transport
+from bumble.transport import open_transport_or_link
 from bumble.gatt import (
     Descriptor,
     Service,
@@ -44,8 +45,6 @@ from bumble.gatt import (
     GATT_HID_CONTROL_POINT_CHARACTERISTIC,
     GATT_REPORT_REFERENCE_DESCRIPTOR,
 )
-import bumble.logging
-
 
 # -----------------------------------------------------------------------------
 
@@ -435,7 +434,7 @@ async def main() -> None:
         )
         return
 
-    async with await open_transport(sys.argv[2]) as hci_transport:
+    async with await open_transport_or_link(sys.argv[2]) as hci_transport:
         # Create a device to manage the host
         device = Device.from_config_file_with_hci(
             sys.argv[1], hci_transport.source, hci_transport.sink
@@ -451,5 +450,5 @@ async def main() -> None:
 
 
 # -----------------------------------------------------------------------------
-bumble.logging.setup_basic_logging('DEBUG')
+logging.basicConfig(level=os.environ.get('BUMBLE_LOGLEVEL', 'DEBUG').upper())
 asyncio.run(main())

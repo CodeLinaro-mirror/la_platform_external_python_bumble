@@ -7,10 +7,8 @@ name = "bumble"
 dynamic = ["version"]
 description = "Bluetooth Stack for Apps, Emulation, Test and Experimentation"
 readme = "README.md"
-license = "Apache-2.0"
-license-files = ["LICENSE"]
 authors = [{ name = "Google", email = "bumble-dev@google.com" }]
-requires-python = ">=3.9"
+requires-python = ">=3.8"
 dependencies = [
     "aiohttp ~= 3.8; platform_system!='Emscripten'",
     "appdirs >= 1.4; platform_system!='Emscripten'",
@@ -44,7 +42,7 @@ test = [
     "coverage >= 6.4",
 ]
 development = [
-    "black ~= 25.1",
+    "black == 24.3",
     "bt-test-interfaces >= 0.0.6",
     "grpcio-tools >= 1.62.1",
     "invoke >= 1.7.3",
@@ -87,6 +85,7 @@ bumble-scan = "bumble.apps.scan:main"
 bumble-show = "bumble.apps.show:main"
 bumble-unbond = "bumble.apps.unbond:main"
 bumble-usb-probe = "bumble.apps.usb_probe:main"
+bumble-link-relay = "bumble.apps.link_relay.link_relay:main"
 bumble-bench = "bumble.apps.bench:main"
 bumble-player = "bumble.apps.player.player:main"
 bumble-speaker = "bumble.apps.speaker.speaker:main"
@@ -108,6 +107,7 @@ packages = [
     "bumble.drivers",
     "bumble.profiles",
     "bumble.apps",
+    "bumble.apps.link_relay",
     "bumble.pandora",
     "bumble.tools",
 ]

@@ -29,9 +29,13 @@ import logging
 from collections import defaultdict
 import struct
 from typing import (
+    Dict,
     Iterable,
+    List,
     Optional,
+    Tuple,
     TypeVar,
+    Type,
     TYPE_CHECKING,
 )
 
@@ -99,10 +103,10 @@ GATT_SERVER_DEFAULT_MAX_MTU = 517
 # GATT Server
 # -----------------------------------------------------------------------------
 class Server(utils.EventEmitter):
-    attributes: list[Attribute]
-    services: list[Service]
-    attributes_by_handle: dict[int, Attribute]
-    subscribers: dict[int, dict[int, bytes]]
+    attributes: List[Attribute]
+    services: List[Service]
+    attributes_by_handle: Dict[int, Attribute]
+    subscribers: Dict[int, Dict[int, bytes]]
     indication_semaphores: defaultdict[int, asyncio.Semaphore]
     pending_confirmations: defaultdict[int, Optional[asyncio.futures.Future]]
 
@@ -132,7 +136,7 @@ class Server(utils.EventEmitter):
     def next_handle(self) -> int:
         return 1 + len(self.attributes)
 
-    def get_advertising_service_data(self) -> dict[Attribute, bytes]:
+    def get_advertising_service_data(self) -> Dict[Attribute, bytes]:
         return {
             attribute: data
             for attribute in self.attributes
@@ -156,7 +160,7 @@ class Server(utils.EventEmitter):
     AttributeGroupType = TypeVar('AttributeGroupType', Service, Characteristic)
 
     def get_attribute_group(
-        self, handle: int, group_type: type[AttributeGroupType]
+        self, handle: int, group_type: Type[AttributeGroupType]
     ) -> Optional[AttributeGroupType]:
         return next(
             (
@@ -182,7 +186,7 @@ class Server(utils.EventEmitter):
 
     def get_characteristic_attributes(
         self, service_uuid: UUID, characteristic_uuid: UUID
-    ) -> Optional[tuple[CharacteristicDeclaration, Characteristic]]:
+    ) -> Optional[Tuple[CharacteristicDeclaration, Characteristic]]:
         service_handle = self.get_service_attribute(service_uuid)
         if not service_handle:
             return None

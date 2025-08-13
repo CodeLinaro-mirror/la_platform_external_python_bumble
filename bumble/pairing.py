@@ -18,10 +18,15 @@
 from __future__ import annotations
 import enum
 from dataclasses import dataclass
-import secrets
-from typing import Optional
+from typing import Optional, Tuple
 
-from bumble import hci
+from bumble.hci import (
+    Address,
+    HCI_NO_INPUT_NO_OUTPUT_IO_CAPABILITY,
+    HCI_DISPLAY_ONLY_IO_CAPABILITY,
+    HCI_DISPLAY_YES_NO_IO_CAPABILITY,
+    HCI_KEYBOARD_ONLY_IO_CAPABILITY,
+)
 from bumble.smp import (
     SMP_NO_INPUT_NO_OUTPUT_IO_CAPABILITY,
     SMP_KEYBOARD_ONLY_IO_CAPABILITY,
@@ -44,7 +49,7 @@ from bumble.core import AdvertisingData, LeRole
 class OobData:
     """OOB data that can be sent from one device to another."""
 
-    address: Optional[hci.Address] = None
+    address: Optional[Address] = None
     role: Optional[LeRole] = None
     shared_data: Optional[OobSharedData] = None
     legacy_context: Optional[OobLegacyContext] = None
@@ -56,7 +61,7 @@ class OobData:
         shared_data_r: Optional[bytes] = None
         for ad_type, ad_data in ad.ad_structures:
             if ad_type == AdvertisingData.LE_BLUETOOTH_DEVICE_ADDRESS:
-                instance.address = hci.Address(ad_data)
+                instance.address = Address(ad_data)
             elif ad_type == AdvertisingData.LE_ROLE:
                 instance.role = LeRole(ad_data[0])
             elif ad_type == AdvertisingData.LE_SECURE_CONNECTIONS_CONFIRMATION_VALUE:
@@ -124,11 +129,11 @@ class PairingDelegate:
     # Default mapping from abstract to Classic I/O capabilities.
     # Subclasses may override this if they prefer a different mapping.
     CLASSIC_IO_CAPABILITIES_MAP = {
-        NO_OUTPUT_NO_INPUT: hci.IoCapability.NO_INPUT_NO_OUTPUT,
-        KEYBOARD_INPUT_ONLY: hci.IoCapability.KEYBOARD_ONLY,
-        DISPLAY_OUTPUT_ONLY: hci.IoCapability.DISPLAY_ONLY,
-        DISPLAY_OUTPUT_AND_YES_NO_INPUT: hci.IoCapability.DISPLAY_YES_NO,
-        DISPLAY_OUTPUT_AND_KEYBOARD_INPUT: hci.IoCapability.DISPLAY_YES_NO,
+        NO_OUTPUT_NO_INPUT: HCI_NO_INPUT_NO_OUTPUT_IO_CAPABILITY,
+        KEYBOARD_INPUT_ONLY: HCI_KEYBOARD_ONLY_IO_CAPABILITY,
+        DISPLAY_OUTPUT_ONLY: HCI_DISPLAY_ONLY_IO_CAPABILITY,
+        DISPLAY_OUTPUT_AND_YES_NO_INPUT: HCI_DISPLAY_YES_NO_IO_CAPABILITY,
+        DISPLAY_OUTPUT_AND_KEYBOARD_INPUT: HCI_DISPLAY_YES_NO_IO_CAPABILITY,
     }
 
     io_capability: IoCapability
@@ -154,7 +159,7 @@ class PairingDelegate:
 
         # pylint: disable=line-too-long
         return self.CLASSIC_IO_CAPABILITIES_MAP.get(
-            self.io_capability, hci.IoCapability.NO_INPUT_NO_OUTPUT
+            self.io_capability, HCI_NO_INPUT_NO_OUTPUT_IO_CAPABILITY
         )
 
     @property
@@ -200,7 +205,7 @@ class PairingDelegate:
     # [LE only]
     async def key_distribution_response(
         self, peer_initiator_key_distribution: int, peer_responder_key_distribution: int
-    ) -> tuple[int, int]:
+    ) -> Tuple[int, int]:
         """
         Return the key distribution response in an SMP protocol context.
 
@@ -217,22 +222,14 @@ class PairingDelegate:
             ),
         )
 
-    async def generate_passkey(self) -> int:
-        """
-        Return a passkey value between 0 and 999999 (inclusive).
-        """
-
-        # By default, generate a random passkey.
-        return secrets.randbelow(1000000)
-
 
 # -----------------------------------------------------------------------------
 class PairingConfig:
     """Configuration for the Pairing protocol."""
 
     class AddressType(enum.IntEnum):
-        PUBLIC = hci.Address.PUBLIC_DEVICE_ADDRESS
-        RANDOM = hci.Address.RANDOM_DEVICE_ADDRESS
+        PUBLIC = Address.PUBLIC_DEVICE_ADDRESS
+        RANDOM = Address.RANDOM_DEVICE_ADDRESS
 
     @dataclass
     class OobConfig:

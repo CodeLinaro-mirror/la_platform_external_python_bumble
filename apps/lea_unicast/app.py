@@ -22,6 +22,7 @@ import datetime
 import functools
 from importlib import resources
 import json
+import os
 import logging
 import pathlib
 import weakref
@@ -43,7 +44,6 @@ from bumble.device import Device, DeviceConfiguration, AdvertisingParameters, Ci
 from bumble.transport import open_transport
 from bumble.profiles import ascs, bap, pacs
 from bumble.hci import Address, CodecID, CodingFormat, HCI_IsoDataPacket
-import bumble.logging
 
 
 # -----------------------------------------------------------------------------
@@ -337,12 +337,7 @@ class Speaker:
                         ),
                         (
                             AdvertisingData.FLAGS,
-                            bytes(
-                                [
-                                    AdvertisingData.LE_GENERAL_DISCOVERABLE_MODE_FLAG
-                                    | AdvertisingData.BR_EDR_NOT_SUPPORTED_FLAG
-                                ]
-                            ),
+                            bytes([AdvertisingData.LE_GENERAL_DISCOVERABLE_MODE_FLAG]),
                         ),
                         (
                             AdvertisingData.INCOMPLETE_LIST_OF_16_BIT_SERVICE_CLASS_UUIDS,
@@ -454,7 +449,7 @@ def speaker(ui_port: int, device_config: str, transport: str, lc3_file: str) -> 
 
 # -----------------------------------------------------------------------------
 def main():
-    bumble.logging.setup_basic_logging()
+    logging.basicConfig(level=os.environ.get('BUMBLE_LOGLEVEL', 'INFO').upper())
     speaker()
 
 

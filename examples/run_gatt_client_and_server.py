@@ -16,7 +16,8 @@
 # Imports
 # -----------------------------------------------------------------------------
 import asyncio
-
+import os
+import logging
 from bumble.colors import color
 from bumble.core import ProtocolError
 from bumble.controller import Controller
@@ -33,7 +34,6 @@ from bumble.gatt import (
     GATT_DEVICE_INFORMATION_SERVICE,
 )
 from bumble.gatt_client import show_services
-import bumble.logging
 
 
 # -----------------------------------------------------------------------------
@@ -119,5 +119,5 @@ async def main() -> None:
 
 
 # -----------------------------------------------------------------------------
-bumble.logging.setup_basic_logging('DEBUG')
+logging.basicConfig(level=os.environ.get('BUMBLE_LOGLEVEL', 'DEBUG').upper())
 asyncio.run(main())

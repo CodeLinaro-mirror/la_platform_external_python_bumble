@@ -16,12 +16,12 @@
 # Imports
 # -----------------------------------------------------------------------------
 import asyncio
+import logging
 import sys
+import os
 import secrets
-import json
-from typing import Optional
-
 import websockets
+import json
 
 from bumble.core import AdvertisingData
 from bumble.device import Device, AdvertisingParameters, AdvertisingEventProperties
@@ -43,8 +43,10 @@ from bumble.profiles.pacs import PacRecord, PublishedAudioCapabilitiesService
 from bumble.profiles.cap import CommonAudioServiceService
 from bumble.profiles.csip import CoordinatedSetIdentificationService, SirkType
 from bumble.profiles.vcs import VolumeControlService
-from bumble.transport import open_transport
-import bumble.logging
+
+from bumble.transport import open_transport_or_link
+
+from typing import Optional
 
 
 def dumps_volume_state(volume_setting: int, muted: int, change_counter: int) -> str:
@@ -64,7 +66,7 @@ async def main() -> None:
         return
 
     print('<<< connecting to HCI...')
-    async with await open_transport(sys.argv[2]) as hci_transport:
+    async with await open_transport_or_link(sys.argv[2]) as hci_transport:
         print('<<< connected')
 
         device = Device.from_config_file_with_hci(
@@ -184,5 +186,5 @@ async def main() -> None:
 
 
 # -----------------------------------------------------------------------------
-bumble.logging.setup_basic_logging('DEBUG')
+logging.basicConfig(level=os.environ.get('BUMBLE_LOGLEVEL', 'DEBUG').upper())
 asyncio.run(main())

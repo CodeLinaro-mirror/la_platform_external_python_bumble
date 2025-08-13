@@ -16,8 +16,8 @@
 # Imports
 # -----------------------------------------------------------------------------
 import datetime
-import importlib
 import logging
+import os
 import struct
 
 import click
@@ -26,7 +26,6 @@ from bumble.colors import color
 from bumble import hci
 from bumble.transport.common import PacketReader
 from bumble.helpers import PacketTracer
-import bumble.logging
 
 
 # -----------------------------------------------------------------------------
@@ -155,10 +154,9 @@ class Printer:
 def main(format, vendor, filename):
     for vendor_name in vendor:
         if vendor_name == 'android':
-            # Prevent being deleted by linter.
-            importlib.import_module('bumble.vendor.android.hci')
+            import bumble.vendor.android.hci
         elif vendor_name == 'zephyr':
-            importlib.import_module('bumble.vendor.zephyr.hci')
+            import bumble.vendor.zephyr.hci
 
     input = open(filename, 'rb')
     if format == 'h4':
@@ -188,5 +186,5 @@ def main(format, vendor, filename):
 
 # -----------------------------------------------------------------------------
 if __name__ == '__main__':
-    bumble.logging.setup_basic_logging('WARNING')
+    logging.basicConfig(level=os.environ.get('BUMBLE_LOGLEVEL', 'WARNING').upper())
     main()  # pylint: disable=no-value-for-parameter

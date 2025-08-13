@@ -20,10 +20,12 @@ import asyncio
 import dataclasses
 import functools
 import enum
+import logging
+import os
 import random
 import struct
 import sys
-from typing import Any, Union
+from typing import Any, List, Union
 
 from bumble.device import Device, Peer
 from bumble import transport
@@ -32,7 +34,6 @@ from bumble import gatt_adapters
 from bumble import gatt_client
 from bumble import hci
 from bumble import core
-import bumble.logging
 
 
 # -----------------------------------------------------------------------------
@@ -341,7 +342,7 @@ async def server(device: Device) -> None:
         byteorder='big',
     )
 
-    characteristics: list[gatt.Characteristic] = [
+    characteristics: List[gatt.Characteristic] = [
         c1,
         c2,
         c3,
@@ -431,5 +432,5 @@ async def main() -> None:
 
 
 # -----------------------------------------------------------------------------
-bumble.logging.setup_basic_logging('DEBUG')
+logging.basicConfig(level=os.environ.get('BUMBLE_LOGLEVEL', 'INFO').upper())
 asyncio.run(main())

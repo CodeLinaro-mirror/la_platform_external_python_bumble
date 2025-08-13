@@ -16,8 +16,9 @@
 # Imports
 # -----------------------------------------------------------------------------
 import asyncio
+import os
 import struct
-
+import logging
 import click
 
 from bumble import l2cap
@@ -26,9 +27,8 @@ from bumble.device import Device, Peer
 from bumble.core import AdvertisingData
 from bumble.gatt import Service, Characteristic, CharacteristicValue
 from bumble.utils import AsyncRunner
-from bumble.transport import open_transport
+from bumble.transport import open_transport_or_link
 from bumble.hci import HCI_Constant
-import bumble.logging
 
 
 # -----------------------------------------------------------------------------
@@ -325,7 +325,7 @@ async def run(
     receive_port,
 ):
     print('<<< connecting to HCI...')
-    async with await open_transport(hci_transport) as (hci_source, hci_sink):
+    async with await open_transport_or_link(hci_transport) as (hci_source, hci_sink):
         print('<<< connected')
 
         # Instantiate a bridge object
@@ -383,7 +383,6 @@ def main(
     receive_host,
     receive_port,
 ):
-    bumble.logging.setup_basic_logging('WARNING')
     asyncio.run(
         run(
             hci_transport,
@@ -398,5 +397,6 @@ def main(
 
 
 # -----------------------------------------------------------------------------
+logging.basicConfig(level=os.environ.get('BUMBLE_LOGLEVEL', 'WARNING').upper())
 if __name__ == '__main__':
     main()

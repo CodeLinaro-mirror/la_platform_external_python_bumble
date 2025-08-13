@@ -15,10 +15,11 @@
 # -----------------------------------------------------------------------------
 # Imports
 # -----------------------------------------------------------------------------
+import logging
 import asyncio
+import os
 
 from bumble.utils import AsyncRunner
-import bumble.logging
 
 # -----------------------------------------------------------------------------
 my_work_queue1 = AsyncRunner.WorkQueue()
@@ -82,5 +83,5 @@ async def main() -> None:
 
 
 # -----------------------------------------------------------------------------
-bumble.logging.setup_basic_logging('DEBUG')
+logging.basicConfig(level=os.environ.get('BUMBLE_LOGLEVEL', 'DEBUG').upper())
 asyncio.run(main())
