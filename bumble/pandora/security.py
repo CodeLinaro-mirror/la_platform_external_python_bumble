@@ -57,7 +57,7 @@ from pandora.security_pb2 import (
     WaitSecurityRequest,
     WaitSecurityResponse,
 )
-from typing import Any, AsyncGenerator, AsyncIterator, Callable, Dict, Optional, Union
+from typing import Any, AsyncGenerator, AsyncIterator, Callable, Optional, Union
 
 
 class PairingDelegate(BasePairingDelegate):
@@ -244,16 +244,16 @@ class SecurityService(SecurityServicer):
                 and connection.authenticated
                 and link_key_type
                 in (
-                    hci.HCI_AUTHENTICATED_COMBINATION_KEY_GENERATED_FROM_P_192_TYPE,
-                    hci.HCI_AUTHENTICATED_COMBINATION_KEY_GENERATED_FROM_P_256_TYPE,
+                    hci.LinkKeyType.AUTHENTICATED_COMBINATION_KEY_GENERATED_FROM_P_192,
+                    hci.LinkKeyType.AUTHENTICATED_COMBINATION_KEY_GENERATED_FROM_P_256,
                 )
             )
         if level == LEVEL4:
             return (
-                connection.encryption == hci.HCI_Encryption_Change_Event.AES_CCM
+                connection.encryption == hci.HCI_Encryption_Change_Event.Enabled.AES_CCM
                 and connection.authenticated
                 and link_key_type
-                == hci.HCI_AUTHENTICATED_COMBINATION_KEY_GENERATED_FROM_P_256_TYPE
+                == hci.LinkKeyType.AUTHENTICATED_COMBINATION_KEY_GENERATED_FROM_P_256
             )
         raise InvalidArgumentError(f"Unexpected level {level}")
 
@@ -457,7 +457,7 @@ class SecurityService(SecurityServicer):
             if self.need_pairing(connection, level):
                 pair_task = asyncio.create_task(connection.pair())
 
-        listeners: Dict[str, Callable[..., Union[None, Awaitable[None]]]] = {
+        listeners: dict[str, Callable[..., Union[None, Awaitable[None]]]] = {
             'disconnection': set_failure('connection_died'),
             'pairing_failure': set_failure('pairing_failure'),
             'connection_authentication_failure': set_failure('authentication_failure'),

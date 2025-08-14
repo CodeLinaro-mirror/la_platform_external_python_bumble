@@ -21,11 +21,10 @@ import asyncio.subprocess
 from importlib import resources
 import enum
 import json
-import os
 import logging
 import pathlib
 import subprocess
-from typing import Dict, List, Optional
+from typing import Optional
 import weakref
 
 import click
@@ -58,6 +57,7 @@ from bumble.a2dp import (
 from bumble.utils import AsyncRunner
 from bumble.codecs import AacAudioRtpPacket
 from bumble.rtp import MediaPacket
+import bumble.logging
 
 
 # -----------------------------------------------------------------------------
@@ -448,7 +448,7 @@ class Speaker:
         # Create an HTTP server for the UI
         self.ui_server = UiServer(speaker=self, port=ui_port)
 
-    def sdp_records(self) -> Dict[int, List[ServiceAttribute]]:
+    def sdp_records(self) -> dict[int, list[ServiceAttribute]]:
         service_record_handle = 0x00010001
         return {
             service_record_handle: make_audio_sink_service_sdp_records(
@@ -833,11 +833,7 @@ def speaker(
 
 # -----------------------------------------------------------------------------
 def main():
-    logging.basicConfig(
-        level=os.environ.get('BUMBLE_LOGLEVEL', 'WARNING').upper(),
-        format="[%(asctime)s.%(msecs)03d] %(levelname)s:%(name)s:%(message)s",
-        datefmt="%H:%M:%S",
-    )
+    bumble.logging.setup_basic_logging('WARNING')
     speaker()
 
 
