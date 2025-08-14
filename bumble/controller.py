@@ -27,7 +27,7 @@ from bumble.colors import color
 from bumble.core import (
     PhysicalTransport,
 )
-
+from bumble import hci
 from bumble.hci import (
     HCI_ACL_DATA_PACKET,
     HCI_COMMAND_DISALLOWED_ERROR,
@@ -63,7 +63,7 @@ from bumble.hci import (
     HCI_Packet,
     HCI_Role_Change_Event,
 )
-from typing import Optional, Union, Dict, Any, TYPE_CHECKING
+from typing import Optional, Union, Any, TYPE_CHECKING
 
 if TYPE_CHECKING:
     from bumble.link import LocalLink
@@ -108,7 +108,9 @@ class Connection:
     def on_hci_acl_data_packet(self, packet):
         self.assembler.feed_packet(packet)
         self.controller.send_hci_packet(
-            HCI_Number_Of_Completed_Packets_Event([(self.handle, 1)])
+            HCI_Number_Of_Completed_Packets_Event(
+                connection_handles=[self.handle], num_completed_packets=[1]
+            )
         )
 
     def on_acl_pdu(self, data):
@@ -132,17 +134,17 @@ class Controller:
         self.hci_sink = None
         self.link = link
 
-        self.central_connections: Dict[Address, Connection] = (
+        self.central_connections: dict[Address, Connection] = (
             {}
         )  # Connections where this controller is the central
-        self.peripheral_connections: Dict[Address, Connection] = (
+        self.peripheral_connections: dict[Address, Connection] = (
             {}
         )  # Connections where this controller is the peripheral
-        self.classic_connections: Dict[Address, Connection] = (
+        self.classic_connections: dict[Address, Connection] = (
             {}
         )  # Connections in BR/EDR
-        self.central_cis_links: Dict[int, CisLink] = {}  # CIS links by handle
-        self.peripheral_cis_links: Dict[int, CisLink] = {}  # CIS links by handle
+        self.central_cis_links: dict[int, CisLink] = {}  # CIS links by handle
+        self.peripheral_cis_links: dict[int, CisLink] = {}  # CIS links by handle
 
         self.hci_version = HCI_VERSION_BLUETOOTH_CORE_5_0
         self.hci_revision = 0
@@ -368,6 +370,12 @@ class Controller:
                 return connection
         return None
 
+    def find_peripheral_connection_by_handle(self, handle):
+        for connection in self.peripheral_connections.values():
+            if connection.handle == handle:
+                return connection
+        return None
+
     def find_classic_connection_by_handle(self, handle):
         for connection in self.classic_connections.values():
             if connection.handle == handle:
@@ -392,7 +400,7 @@ class Controller:
                 peer_address=peer_address,
                 link=self.link,
                 transport=PhysicalTransport.LE,
-                link_type=HCI_Connection_Complete_Event.ACL_LINK_TYPE,
+                link_type=HCI_Connection_Complete_Event.LinkType.ACL,
             )
             self.peripheral_connections[peer_address] = connection
             logger.debug(f'New PERIPHERAL connection handle: 0x{connection_handle:04X}')
@@ -412,7 +420,7 @@ class Controller:
             )
         )
 
-    def on_link_central_disconnected(self, peer_address, reason):
+    def on_link_disconnected(self, peer_address, reason):
         '''
         Called when an active disconnection occurs from a peer
         '''
@@ -429,6 +437,17 @@ class Controller:
 
             # Remove the connection
             del self.peripheral_connections[peer_address]
+        elif connection := self.central_connections.get(peer_address):
+            self.send_hci_packet(
+                HCI_Disconnection_Complete_Event(
+                    status=HCI_SUCCESS,
+                    connection_handle=connection.handle,
+                    reason=reason,
+                )
+            )
+
+            # Remove the connection
+            del self.central_connections[peer_address]
         else:
             logger.warning(f'!!! No peripheral connection found for {peer_address}')
 
@@ -452,7 +471,7 @@ class Controller:
                     peer_address=peer_address,
                     link=self.link,
                     transport=PhysicalTransport.LE,
-                    link_type=HCI_Connection_Complete_Event.ACL_LINK_TYPE,
+                    link_type=HCI_Connection_Complete_Event.LinkType.ACL,
                 )
                 self.central_connections[peer_address] = connection
                 logger.debug(
@@ -477,7 +496,7 @@ class Controller:
             )
         )
 
-    def on_link_peripheral_disconnection_complete(self, disconnection_command, status):
+    def on_link_disconnection_complete(self, disconnection_command, status):
         '''
         Called when a disconnection has been completed
         '''
@@ -497,26 +516,11 @@ class Controller:
         ):
             logger.debug(f'CENTRAL Connection removed: {connection}')
             del self.central_connections[connection.peer_address]
-
-    def on_link_peripheral_disconnected(self, peer_address):
-        '''
-        Called when a connection to a peripheral is broken
-        '''
-
-        # Send a disconnection complete event
-        if connection := self.central_connections.get(peer_address):
-            self.send_hci_packet(
-                HCI_Disconnection_Complete_Event(
-                    status=HCI_SUCCESS,
-                    connection_handle=connection.handle,
-                    reason=HCI_CONNECTION_TIMEOUT_ERROR,
-                )
-            )
-
-            # Remove the connection
-            del self.central_connections[peer_address]
-        else:
-            logger.warning(f'!!! No central connection found for {peer_address}')
+        elif connection := self.find_peripheral_connection_by_handle(
+            disconnection_command.connection_handle
+        ):
+            logger.debug(f'PERIPHERAL Connection removed: {connection}')
+            del self.peripheral_connections[connection.peer_address]
 
     def on_link_encrypted(self, peer_address, _rand, _ediv, _ltk):
         # For now, just setup the encryption without asking the host
@@ -542,15 +546,14 @@ class Controller:
         acl_packet = HCI_AclDataPacket(connection.handle, 2, 0, len(data), data)
         self.send_hci_packet(acl_packet)
 
-    def on_link_advertising_data(self, sender_address, data):
+    def on_link_advertising_data(self, sender_address: Address, data: bytes):
         # Ignore if we're not scanning
         if self.le_scan_enable == 0:
             return
 
         # Send a scan report
         report = HCI_LE_Advertising_Report_Event.Report(
-            HCI_LE_Advertising_Report_Event.Report.FIELDS,
-            event_type=HCI_LE_Advertising_Report_Event.ADV_IND,
+            event_type=HCI_LE_Advertising_Report_Event.EventType.ADV_IND,
             address_type=sender_address.address_type,
             address=sender_address,
             data=data,
@@ -560,8 +563,7 @@ class Controller:
 
         # Simulate a scan response
         report = HCI_LE_Advertising_Report_Event.Report(
-            HCI_LE_Advertising_Report_Event.Report.FIELDS,
-            event_type=HCI_LE_Advertising_Report_Event.SCAN_RSP,
+            event_type=HCI_LE_Advertising_Report_Event.EventType.SCAN_RSP,
             address_type=sender_address.address_type,
             address=sender_address,
             data=data,
@@ -618,8 +620,8 @@ class Controller:
                 cis_sync_delay=0,
                 transport_latency_c_to_p=0,
                 transport_latency_p_to_c=0,
-                phy_c_to_p=0,
-                phy_p_to_c=0,
+                phy_c_to_p=1,
+                phy_p_to_c=1,
                 nse=0,
                 bn_c_to_p=0,
                 bn_p_to_c=0,
@@ -695,7 +697,7 @@ class Controller:
                     peer_address=peer_address,
                     link=self.link,
                     transport=PhysicalTransport.BR_EDR,
-                    link_type=HCI_Connection_Complete_Event.ACL_LINK_TYPE,
+                    link_type=HCI_Connection_Complete_Event.LinkType.ACL,
                 )
                 self.classic_connections[peer_address] = connection
                 logger.debug(
@@ -709,7 +711,7 @@ class Controller:
                     connection_handle=connection_handle,
                     bd_addr=peer_address,
                     encryption_enabled=False,
-                    link_type=HCI_Connection_Complete_Event.ACL_LINK_TYPE,
+                    link_type=HCI_Connection_Complete_Event.LinkType.ACL,
                 )
             )
         else:
@@ -720,7 +722,7 @@ class Controller:
                     connection_handle=0,
                     bd_addr=peer_address,
                     encryption_enabled=False,
-                    link_type=HCI_Connection_Complete_Event.ACL_LINK_TYPE,
+                    link_type=HCI_Connection_Complete_Event.LinkType.ACL,
                 )
             )
 
@@ -877,6 +879,14 @@ class Controller:
             else:
                 # Remove the connection
                 del self.central_connections[connection.peer_address]
+        elif connection := self.find_peripheral_connection_by_handle(handle):
+            if self.link:
+                self.link.disconnect(
+                    self.random_address, connection.peer_address, command
+                )
+            else:
+                # Remove the connection
+                del self.peripheral_connections[connection.peer_address]
         elif connection := self.find_classic_connection_by_handle(handle):
             if self.link:
                 self.link.classic_disconnect(
@@ -945,7 +955,7 @@ class Controller:
             )
         )
         self.link.classic_sco_connect(
-            self, connection.peer_address, HCI_Connection_Complete_Event.ESCO_LINK_TYPE
+            self, connection.peer_address, HCI_Connection_Complete_Event.LinkType.ESCO
         )
 
     def on_hci_enhanced_accept_synchronous_connection_request_command(self, command):
@@ -974,10 +984,71 @@ class Controller:
             )
         )
         self.link.classic_accept_sco_connection(
-            self, connection.peer_address, HCI_Connection_Complete_Event.ESCO_LINK_TYPE
+            self, connection.peer_address, HCI_Connection_Complete_Event.LinkType.ESCO
         )
 
-    def on_hci_switch_role_command(self, command):
+    def on_hci_sniff_mode_command(self, command: hci.HCI_Sniff_Mode_Command):
+        '''
+        See Bluetooth spec Vol 4, Part E - 7.2.2 Sniff Mode command
+        '''
+        if self.link is None:
+            self.send_hci_packet(
+                hci.HCI_Command_Status_Event(
+                    status=hci.HCI_UNKNOWN_CONNECTION_IDENTIFIER_ERROR,
+                    num_hci_command_packets=1,
+                    command_opcode=command.op_code,
+                )
+            )
+            return
+
+        self.send_hci_packet(
+            hci.HCI_Command_Status_Event(
+                status=HCI_SUCCESS,
+                num_hci_command_packets=1,
+                command_opcode=command.op_code,
+            )
+        )
+        self.send_hci_packet(
+            hci.HCI_Mode_Change_Event(
+                status=HCI_SUCCESS,
+                connection_handle=command.connection_handle,
+                current_mode=hci.HCI_Mode_Change_Event.Mode.SNIFF,
+                interval=2,
+            )
+        )
+
+    def on_hci_exit_sniff_mode_command(self, command: hci.HCI_Exit_Sniff_Mode_Command):
+        '''
+        See Bluetooth spec Vol 4, Part E - 7.2.3 Exit Sniff Mode command
+        '''
+
+        if self.link is None:
+            self.send_hci_packet(
+                hci.HCI_Command_Status_Event(
+                    status=hci.HCI_UNKNOWN_CONNECTION_IDENTIFIER_ERROR,
+                    num_hci_command_packets=1,
+                    command_opcode=command.op_code,
+                )
+            )
+            return
+
+        self.send_hci_packet(
+            hci.HCI_Command_Status_Event(
+                status=HCI_SUCCESS,
+                num_hci_command_packets=1,
+                command_opcode=command.op_code,
+            )
+        )
+        self.send_hci_packet(
+            hci.HCI_Mode_Change_Event(
+                status=HCI_SUCCESS,
+                connection_handle=command.connection_handle,
+                current_mode=hci.HCI_Mode_Change_Event.Mode.ACTIVE,
+                interval=2,
+            )
+        )
+
+    def on_hci_switch_role_command(self, command: hci.HCI_Switch_Role_Command):
         '''
         See Bluetooth spec Vol 4, Part E - 7.2.8 Switch Role command
         '''
@@ -1197,6 +1268,56 @@ class Controller:
             else bytes(6)
         )
         return bytes([HCI_SUCCESS]) + bd_addr
+
+    def on_hci_le_set_default_subrate_command(
+        self, command: hci.HCI_LE_Set_Default_Subrate_Command
+    ):
+        '''
+        See Bluetooth spec Vol 6, Part E - 7.8.123 LE Set Event Mask Command
+        '''
+
+        if (
+            command.subrate_max * (command.max_latency) > 500
+            or command.subrate_max < command.subrate_min
+            or command.continuation_number >= command.subrate_max
+        ):
+            return bytes([HCI_INVALID_HCI_COMMAND_PARAMETERS_ERROR])
+
+        return bytes([HCI_SUCCESS])
+
+    def on_hci_le_subrate_request_command(
+        self, command: hci.HCI_LE_Subrate_Request_Command
+    ):
+        '''
+        See Bluetooth spec Vol 6, Part E - 7.8.124 LE Subrate Request command
+        '''
+        if (
+            command.subrate_max * (command.max_latency) > 500
+            or command.continuation_number < command.continuation_number
+            or command.subrate_max < command.subrate_min
+            or command.continuation_number >= command.subrate_max
+        ):
+            return bytes([HCI_INVALID_HCI_COMMAND_PARAMETERS_ERROR])
+
+        self.send_hci_packet(
+            hci.HCI_Command_Status_Event(
+                status=hci.HCI_SUCCESS,
+                num_hci_command_packets=1,
+                command_opcode=command.op_code,
+            )
+        )
+
+        self.send_hci_packet(
+            hci.HCI_LE_Subrate_Change_Event(
+                status=hci.HCI_SUCCESS,
+                connection_handle=command.connection_handle,
+                subrate_factor=2,
+                peripheral_latency=2,
+                continuation_number=command.continuation_number,
+                supervision_timeout=command.supervision_timeout,
+            )
+        )
+        return None
 
     def on_hci_le_set_event_mask_command(self, command):
         '''
@@ -1744,3 +1865,11 @@ class Controller:
         See Bluetooth spec Vol 4, Part E - 7.8.110 LE Remove ISO Data Path Command
         '''
         return struct.pack('<BH', HCI_SUCCESS, command.connection_handle)
+
+    def on_hci_le_set_host_feature_command(
+        self, _command: hci.HCI_LE_Set_Host_Feature_Command
+    ):
+        '''
+        See Bluetooth spec Vol 4, Part E - 7.8.115 LE Set Host Feature command
+        '''
+        return bytes([HCI_SUCCESS])

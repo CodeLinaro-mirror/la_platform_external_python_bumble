@@ -18,20 +18,20 @@
 import asyncio
 import contextlib
 import sys
-import os
-import logging
 import json
-import websockets
 import functools
 from typing import Optional
 
-from bumble import utils
+import websockets
+
 from bumble import rfcomm
 from bumble import hci
 from bumble.device import Device, Connection
-from bumble.transport import open_transport_or_link
+from bumble.transport import open_transport
 from bumble import hfp
 from bumble.hfp import HfProtocol
+import bumble.logging
+
 
 ws: Optional[websockets.WebSocketServerProtocol] = None
 hf_protocol: Optional[HfProtocol] = None
@@ -46,7 +46,7 @@ def on_dlc(dlc: rfcomm.DLC, configuration: hfp.HfConfiguration):
 
     def on_sco_request(connection: Connection, link_type: int, protocol: HfProtocol):
         if connection == protocol.dlc.multiplexer.l2cap_channel.connection:
-            if link_type == hci.HCI_Connection_Complete_Event.SCO_LINK_TYPE:
+            if link_type == hci.HCI_Connection_Complete_Event.LinkType.SCO:
                 esco_parameters = hfp.ESCO_PARAMETERS[
                     hfp.DefaultCodecParameters.SCO_CVSD_D1
                 ]
@@ -61,14 +61,12 @@ def on_dlc(dlc: rfcomm.DLC, configuration: hfp.HfConfiguration):
             else:
                 raise RuntimeError("unknown active codec")
 
-            utils.cancel_on_event(
-                connection,
-                'disconnection',
+            connection.cancel_on_disconnection(
                 connection.device.send_command(
                     hci.HCI_Enhanced_Accept_Synchronous_Connection_Request_Command(
                         bd_addr=connection.peer_address, **esco_parameters.asdict()
                     )
-                ),
+                )
             )
 
     handler = functools.partial(on_sco_request, protocol=hf_protocol)
@@ -96,7 +94,7 @@ async def main() -> None:
         return
 
     print('<<< connecting to HCI...')
-    async with await open_transport_or_link(sys.argv[2]) as hci_transport:
+    async with await open_transport(sys.argv[2]) as hci_transport:
         print('<<< connected')
 
         # Hands-Free profile configuration.
@@ -177,5 +175,5 @@ async def main() -> None:
 
 
 # -----------------------------------------------------------------------------
-logging.basicConfig(level=os.environ.get('BUMBLE_LOGLEVEL', 'DEBUG').upper())
+bumble.logging.setup_basic_logging('DEBUG')
 asyncio.run(main())

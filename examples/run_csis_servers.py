@@ -16,22 +16,18 @@
 # Imports
 # -----------------------------------------------------------------------------
 import asyncio
-import logging
 import sys
-import os
 import secrets
 
 from bumble.core import AdvertisingData
 from bumble.device import Device
 from bumble.hci import (
     Address,
-    OwnAddressType,
-    HCI_LE_Set_Extended_Advertising_Parameters_Command,
 )
 from bumble.profiles.cap import CommonAudioServiceService
 from bumble.profiles.csip import CoordinatedSetIdentificationService, SirkType
-
-from bumble.transport import open_transport_or_link
+from bumble.transport import open_transport
+import bumble.logging
 
 
 # -----------------------------------------------------------------------------
@@ -46,7 +42,7 @@ async def main() -> None:
 
     print('<<< connecting to HCI...')
     hci_transports = await asyncio.gather(
-        open_transport_or_link(sys.argv[2]), open_transport_or_link(sys.argv[3])
+        open_transport(sys.argv[2]), open_transport(sys.argv[3])
     )
     print('<<< connected')
 
@@ -103,5 +99,5 @@ async def main() -> None:
 
 
 # -----------------------------------------------------------------------------
-logging.basicConfig(level=os.environ.get('BUMBLE_LOGLEVEL', 'DEBUG').upper())
+bumble.logging.setup_basic_logging('DEBUG')
 asyncio.run(main())

@@ -18,14 +18,10 @@
 import asyncio
 import datetime
 import functools
-import logging
 import sys
-import os
 import io
 import struct
 import secrets
-
-from typing import Dict
 
 from bumble.core import AdvertisingData
 from bumble.device import Device
@@ -47,7 +43,8 @@ from bumble.profiles.bap import (
 from bumble.profiles.cap import CommonAudioServiceService
 from bumble.profiles.csip import CoordinatedSetIdentificationService, SirkType
 from bumble.profiles.pacs import PacRecord, PublishedAudioCapabilitiesService
-from bumble.transport import open_transport_or_link
+from bumble.transport import open_transport
+import bumble.logging
 
 
 def _sink_pac_record() -> PacRecord:
@@ -73,17 +70,17 @@ def _sink_pac_record() -> PacRecord:
     )
 
 
-file_outputs: Dict[AseStateMachine, io.BufferedWriter] = {}
+file_outputs: dict[AseStateMachine, io.BufferedWriter] = {}
 
 
 # -----------------------------------------------------------------------------
 async def main() -> None:
     if len(sys.argv) < 3:
-        print('Usage: run_cig_setup.py <config-file>' '<transport-spec-for-device>')
+        print('Usage: run_cig_setup.py <config-file> <transport-spec-for-device>')
         return
 
     print('<<< connecting to HCI...')
-    async with await open_transport_or_link(sys.argv[2]) as hci_transport:
+    async with await open_transport(sys.argv[2]) as hci_transport:
         print('<<< connected')
 
         device = Device.from_config_file_with_hci(
@@ -151,12 +148,9 @@ async def main() -> None:
             sdu += pdu.iso_sdu_fragment
             file_outputs[ase].write(sdu)
 
-        def on_ase_state_change(
-            state: AseStateMachine.State,
-            ase: AseStateMachine,
-        ) -> None:
-            if state != AseStateMachine.State.STREAMING:
-                if file_output := file_outputs.pop(ase):
+        def on_ase_state_change(ase: AseStateMachine) -> None:
+            if ase.state != AseStateMachine.State.STREAMING:
+                if file_output := file_outputs.pop(ase, None):
                     file_output.close()
             else:
                 file_output = open(f'{datetime.datetime.now().isoformat()}.lc3', 'wb')
@@ -205,5 +199,5 @@ async def main() -> None:
 
 
 # -----------------------------------------------------------------------------
-logging.basicConfig(level=os.environ.get('BUMBLE_LOGLEVEL', 'DEBUG').upper())
+bumble.logging.setup_basic_logging('DEBUG')
 asyncio.run(main())

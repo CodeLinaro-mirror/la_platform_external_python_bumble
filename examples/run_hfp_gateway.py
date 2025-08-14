@@ -18,7 +18,6 @@
 import asyncio
 import json
 import sys
-import os
 import io
 import logging
 from typing import Iterable, Optional
@@ -27,9 +26,10 @@ import websockets
 
 import bumble.core
 from bumble.device import Device, ScoLink
-from bumble.transport import open_transport_or_link
+from bumble.transport import open_transport
 from bumble.core import PhysicalTransport
 from bumble import hci, rfcomm, hfp
+import bumble.logging
 
 
 logger = logging.getLogger(__name__)
@@ -191,7 +191,7 @@ async def main() -> None:
         return
 
     print('<<< connecting to HCI...')
-    async with await open_transport_or_link(sys.argv[2]) as hci_transport:
+    async with await open_transport(sys.argv[2]) as hci_transport:
         print('<<< connected')
 
         # Create a device
@@ -286,5 +286,5 @@ async def main() -> None:
 
 
 # -----------------------------------------------------------------------------
-logging.basicConfig(level=os.environ.get('BUMBLE_LOGLEVEL', 'DEBUG').upper())
+bumble.logging.setup_basic_logging('DEBUG')
 asyncio.run(main())
