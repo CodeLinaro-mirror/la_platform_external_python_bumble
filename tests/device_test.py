@@ -19,6 +19,7 @@ import asyncio
 import functools
 import logging
 import os
+from unittest import mock
 import pytest
 
 from bumble.core import (
@@ -28,11 +29,15 @@ from bumble.core import (
 from bumble.device import (
     AdvertisingEventProperties,
     AdvertisingParameters,
+    CigParameters,
+    CisLink,
     Connection,
     Device,
     PeriodicAdvertisingParameters,
 )
 from bumble.host import DataPacketQueue, Host
+from bumble import device
+from bumble import hci
 from bumble.hci import (
     HCI_ACCEPT_CONNECTION_REQUEST_COMMAND,
     HCI_COMMAND_STATUS_PENDING,
@@ -122,7 +127,7 @@ async def test_device_connect_parallel():
             HCI_Connection_Request_Event(
                 bd_addr=d0.public_address,
                 class_of_device=0,
-                link_type=HCI_Connection_Complete_Event.ACL_LINK_TYPE,
+                link_type=HCI_Connection_Complete_Event.LinkType.ACL,
             )
         )
 
@@ -142,7 +147,7 @@ async def test_device_connect_parallel():
             HCI_Connection_Request_Event(
                 bd_addr=d0.public_address,
                 class_of_device=0,
-                link_type=HCI_Connection_Complete_Event.ACL_LINK_TYPE,
+                link_type=HCI_Connection_Complete_Event.LinkType.ACL,
             )
         )
 
@@ -165,7 +170,7 @@ async def test_device_connect_parallel():
                 status=HCI_SUCCESS,
                 connection_handle=0x100,
                 bd_addr=d0.public_address,
-                link_type=HCI_Connection_Complete_Event.ACL_LINK_TYPE,
+                link_type=HCI_Connection_Complete_Event.LinkType.ACL,
                 encryption_enabled=True,
             )
         )
@@ -175,7 +180,7 @@ async def test_device_connect_parallel():
                 status=HCI_SUCCESS,
                 connection_handle=0x100,
                 bd_addr=d1.public_address,
-                link_type=HCI_Connection_Complete_Event.ACL_LINK_TYPE,
+                link_type=HCI_Connection_Complete_Event.LinkType.ACL,
                 encryption_enabled=True,
             )
         )
@@ -199,7 +204,7 @@ async def test_device_connect_parallel():
                 status=HCI_SUCCESS,
                 connection_handle=0x101,
                 bd_addr=d0.public_address,
-                link_type=HCI_Connection_Complete_Event.ACL_LINK_TYPE,
+                link_type=HCI_Connection_Complete_Event.LinkType.ACL,
                 encryption_enabled=True,
             )
         )
@@ -209,7 +214,7 @@ async def test_device_connect_parallel():
                 status=HCI_SUCCESS,
                 connection_handle=0x101,
                 bd_addr=d2.public_address,
-                link_type=HCI_Connection_Complete_Event.ACL_LINK_TYPE,
+                link_type=HCI_Connection_Complete_Event.LinkType.ACL,
                 encryption_enabled=True,
             )
         )
@@ -477,16 +482,13 @@ async def test_cis():
 
     peripheral_cis_futures = {}
 
-    def on_cis_request(
-        acl_connection: Connection,
-        cis_handle: int,
-        _cig_id: int,
-        _cis_id: int,
-    ):
-        utils.cancel_on_event(
-            acl_connection, 'disconnection', devices[1].accept_cis_request(cis_handle)
+    def on_cis_request(cis_link: CisLink):
+        cis_link.acl_connection.cancel_on_disconnection(
+            devices[1].accept_cis_request(cis_link),
         )
-        peripheral_cis_futures[cis_handle] = asyncio.get_running_loop().create_future()
+        peripheral_cis_futures[cis_link.handle] = (
+            asyncio.get_running_loop().create_future()
+        )
 
     devices[1].on('cis_request', on_cis_request)
     devices[1].on(
@@ -495,19 +497,21 @@ async def test_cis():
     )
 
     cis_handles = await devices[0].setup_cig(
-        cig_id=1,
-        cis_id=[2, 3],
-        sdu_interval=(0, 0),
-        framing=0,
-        max_sdu=(0, 0),
-        retransmission_number=0,
-        max_transport_latency=(0, 0),
+        CigParameters(
+            cig_id=1,
+            cis_parameters=[
+                CigParameters.CisParameters(cis_id=2),
+                CigParameters.CisParameters(cis_id=3),
+            ],
+            sdu_interval_c_to_p=0,
+            sdu_interval_p_to_c=0,
+        ),
     )
     assert len(cis_handles) == 2
     cis_links = await devices[0].create_cis(
         [
-            (cis_handles[0], devices.connections[0].handle),
-            (cis_handles[1], devices.connections[0].handle),
+            (cis_handles[0], devices.connections[0]),
+            (cis_handles[1], devices.connections[0]),
         ]
     )
     await asyncio.gather(*peripheral_cis_futures.values())
@@ -525,32 +529,27 @@ async def test_cis_setup_failure():
 
     cis_requests = asyncio.Queue()
 
-    def on_cis_request(
-        acl_connection: Connection,
-        cis_handle: int,
-        cig_id: int,
-        cis_id: int,
-    ):
-        del acl_connection, cig_id, cis_id
-        cis_requests.put_nowait(cis_handle)
+    def on_cis_request(cis_link: CisLink):
+        cis_requests.put_nowait(cis_link)
 
     devices[1].on('cis_request', on_cis_request)
 
     cis_handles = await devices[0].setup_cig(
-        cig_id=1,
-        cis_id=[2],
-        sdu_interval=(0, 0),
-        framing=0,
-        max_sdu=(0, 0),
-        retransmission_number=0,
-        max_transport_latency=(0, 0),
+        CigParameters(
+            cig_id=1,
+            cis_parameters=[
+                CigParameters.CisParameters(cis_id=2),
+            ],
+            sdu_interval_c_to_p=0,
+            sdu_interval_p_to_c=0,
+        ),
     )
     assert len(cis_handles) == 1
 
     cis_create_task = asyncio.create_task(
         devices[0].create_cis(
             [
-                (cis_handles[0], devices.connections[0].handle),
+                (cis_handles[0], devices.connections[0]),
             ]
         )
     )
@@ -574,6 +573,73 @@ async def test_cis_setup_failure():
 
     with pytest.raises(HCI_Error):
         await asyncio.wait_for(cis_create_task, _TIMEOUT)
+
+
+# -----------------------------------------------------------------------------
+@pytest.mark.asyncio
+async def test_enter_and_exit_sniff_mode():
+    devices = TwoDevices()
+    await devices.setup_connection()
+
+    q = asyncio.Queue()
+
+    def on_mode_change():
+        q.put_nowait(lambda: None)
+
+    devices.connections[0].on(Connection.EVENT_MODE_CHANGE, on_mode_change)
+
+    await devices[0].send_command(
+        hci.HCI_Sniff_Mode_Command(
+            connection_handle=devices.connections[0].handle,
+            sniff_max_interval=2,
+            sniff_min_interval=2,
+            sniff_attempt=2,
+            sniff_timeout=2,
+        ),
+    )
+
+    await asyncio.wait_for(q.get(), _TIMEOUT)
+    assert devices.connections[0].classic_mode == hci.HCI_Mode_Change_Event.Mode.SNIFF
+    assert devices.connections[0].classic_interval == 2
+
+    await devices[0].send_command(
+        hci.HCI_Exit_Sniff_Mode_Command(connection_handle=devices.connections[0].handle)
+    )
+
+    await asyncio.wait_for(q.get(), _TIMEOUT)
+    assert devices.connections[0].classic_mode == hci.HCI_Mode_Change_Event.Mode.ACTIVE
+    assert devices.connections[0].classic_interval == 2
+
+
+# -----------------------------------------------------------------------------
+@pytest.mark.asyncio
+async def test_le_request_subrate():
+    devices = TwoDevices()
+    await devices.setup_connection()
+
+    q = asyncio.Queue()
+
+    def on_le_subrate_change():
+        q.put_nowait(lambda: None)
+
+    devices.connections[0].on(Connection.EVENT_LE_SUBRATE_CHANGE, on_le_subrate_change)
+
+    await devices[0].send_command(
+        hci.HCI_LE_Subrate_Request_Command(
+            connection_handle=devices.connections[0].handle,
+            subrate_min=2,
+            subrate_max=2,
+            max_latency=2,
+            continuation_number=1,
+            supervision_timeout=2,
+        )
+    )
+
+    await asyncio.wait_for(q.get(), _TIMEOUT)
+    assert devices.connections[0].parameters.subrate_factor == 2
+    assert devices.connections[0].parameters.peripheral_latency == 2
+    assert devices.connections[0].parameters.continuation_number == 1
+    assert devices.connections[0].parameters.supervision_timeout == 20
 
 
 # -----------------------------------------------------------------------------
@@ -628,6 +694,73 @@ def test_gatt_services_with_gas_and_gatt():
     assert (
         device.gatt_server.attributes[12].uuid == gatt.GATT_DATABASE_HASH_CHARACTERISTIC
     )
+
+
+# -----------------------------------------------------------------------------
+@pytest.mark.asyncio
+async def test_inquiry_result():
+    d = (await TwoDevices.create_with_connection())[0]
+    m = mock.Mock()
+    d.on(d.EVENT_INQUIRY_RESULT, m)
+    d.host.on_packet(
+        bytes(
+            hci.HCI_Extended_Inquiry_Result_Event(
+                num_responses=1,
+                bd_addr=hci.Address("00:11:22:33:44:55/P"),
+                page_scan_repetition_mode=2,
+                reserved=0,
+                class_of_device=3,
+                clock_offset=4,
+                rssi=5,
+                extended_inquiry_response=b"6789",
+            )
+        )
+    )
+    m.assert_called_with(hci.Address("00:11:22:33:44:55/P"), 3, mock.ANY, 5)
+
+
+# -----------------------------------------------------------------------------
+@pytest.mark.asyncio
+async def test_extended_inquiry_result():
+    d = (await TwoDevices.create_with_connection())[0]
+    m = mock.Mock()
+    d.on(d.EVENT_INQUIRY_RESULT, m)
+    d.host.on_packet(
+        bytes(
+            hci.HCI_Extended_Inquiry_Result_Event(
+                num_responses=1,
+                bd_addr=hci.Address("00:11:22:33:44:55/P"),
+                page_scan_repetition_mode=2,
+                reserved=0,
+                class_of_device=3,
+                clock_offset=4,
+                rssi=5,
+                extended_inquiry_response=b"6789",
+            )
+        )
+    )
+    m.assert_called_with(hci.Address("00:11:22:33:44:55/P"), 3, mock.ANY, 5)
+
+
+# -----------------------------------------------------------------------------
+@pytest.mark.asyncio
+async def test_inquiry_result_with_rssi():
+    d = (await TwoDevices.create_with_connection())[0]
+    m = mock.Mock()
+    d.on(d.EVENT_INQUIRY_RESULT, m)
+    d.host.on_packet(
+        bytes(
+            hci.HCI_Inquiry_Result_With_RSSI_Event(
+                bd_addr=[hci.Address("00:11:22:33:44:55/P")],
+                page_scan_repetition_mode=[2],
+                reserved=[0],
+                class_of_device=[3],
+                clock_offset=[4],
+                rssi=[5],
+            )
+        )
+    )
+    m.assert_called_with(hci.Address("00:11:22:33:44:55/P"), 3, mock.ANY, 5)
 
 
 # -----------------------------------------------------------------------------

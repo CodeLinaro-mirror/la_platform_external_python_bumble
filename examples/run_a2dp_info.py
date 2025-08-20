@@ -17,12 +17,10 @@
 # -----------------------------------------------------------------------------
 import asyncio
 import sys
-import os
-import logging
 
 from bumble.colors import color
 from bumble.device import Device
-from bumble.transport import open_transport_or_link
+from bumble.transport import open_transport
 from bumble.core import (
     PhysicalTransport,
     BT_AVDTP_PROTOCOL_ID,
@@ -39,6 +37,7 @@ from bumble.sdp import (
     SDP_BLUETOOTH_PROFILE_DESCRIPTOR_LIST_ATTRIBUTE_ID,
     SDP_SERVICE_CLASS_ID_LIST_ATTRIBUTE_ID,
 )
+import bumble.logging
 
 
 # -----------------------------------------------------------------------------
@@ -146,7 +145,7 @@ async def main() -> None:
         return
 
     print('<<< connecting to HCI...')
-    async with await open_transport_or_link(sys.argv[2]) as hci_transport:
+    async with await open_transport(sys.argv[2]) as hci_transport:
         print('<<< connected')
 
         # Create a device
@@ -198,5 +197,5 @@ async def main() -> None:
 
 
 # -----------------------------------------------------------------------------
-logging.basicConfig(level=os.environ.get('BUMBLE_LOGLEVEL', 'DEBUG').upper())
+bumble.logging.setup_basic_logging('DEBUG')
 asyncio.run(main())

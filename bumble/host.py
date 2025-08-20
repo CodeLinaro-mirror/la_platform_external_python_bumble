@@ -26,10 +26,7 @@ from typing import (
     Any,
     Awaitable,
     Callable,
-    Deque,
-    Dict,
     Optional,
-    Set,
     cast,
     TYPE_CHECKING,
 )
@@ -41,7 +38,6 @@ from bumble.snoop import Snooper
 from bumble import drivers
 from bumble import hci
 from bumble.core import (
-    PhysicalTransport,
     PhysicalTransport,
     ConnectionPHY,
     ConnectionParameters,
@@ -75,6 +71,11 @@ class DataPacketQueue(utils.EventEmitter):
 
     max_packet_size: int
 
+    class PerConnectionState:
+        def __init__(self) -> None:
+            self.in_flight = 0
+            self.drained = asyncio.Event()
+
     def __init__(
         self,
         max_packet_size: int,
@@ -85,11 +86,16 @@ class DataPacketQueue(utils.EventEmitter):
         self.max_packet_size = max_packet_size
         self.max_in_flight = max_in_flight
         self._in_flight = 0  # Total number of packets in flight across all connections
-        self._in_flight_per_connection: dict[int, int] = collections.defaultdict(
-            int
-        )  # Number of packets in flight per connection
+        self._connection_state: dict[int, DataPacketQueue.PerConnectionState] = (
+            collections.defaultdict(DataPacketQueue.PerConnectionState)
+        )
+        self._drained_per_connection: dict[int, asyncio.Event] = (
+            collections.defaultdict(asyncio.Event)
+        )
         self._send = send
-        self._packets: Deque[tuple[hci.HCI_Packet, int]] = collections.deque()
+        self._packets: collections.deque[tuple[hci.HCI_Packet, int]] = (
+            collections.deque()
+        )
         self._queued = 0
         self._completed = 0
 
@@ -137,36 +143,40 @@ class DataPacketQueue(utils.EventEmitter):
             self._completed += flushed_count
             self._packets = collections.deque(packets_to_keep)
 
-        if connection_handle in self._in_flight_per_connection:
-            in_flight = self._in_flight_per_connection[connection_handle]
+        if connection_state := self._connection_state.pop(connection_handle, None):
+            in_flight = connection_state.in_flight
             self._completed += in_flight
             self._in_flight -= in_flight
-            del self._in_flight_per_connection[connection_handle]
+            connection_state.drained.set()
 
     def _check_queue(self) -> None:
         while self._packets and self._in_flight < self.max_in_flight:
             packet, connection_handle = self._packets.pop()
             self._send(packet)
             self._in_flight += 1
-            self._in_flight_per_connection[connection_handle] += 1
+            connection_state = self._connection_state[connection_handle]
+            connection_state.in_flight += 1
+            connection_state.drained.clear()
 
     def on_packets_completed(self, packet_count: int, connection_handle: int) -> None:
         """Mark one or more packets associated with a connection as completed."""
-        if connection_handle not in self._in_flight_per_connection:
+        if connection_handle not in self._connection_state:
             logger.warning(
                 f'received completion for unknown connection {connection_handle}'
             )
             return
 
-        in_flight_for_connection = self._in_flight_per_connection[connection_handle]
-        if packet_count <= in_flight_for_connection:
-            self._in_flight_per_connection[connection_handle] -= packet_count
+        connection_state = self._connection_state[connection_handle]
+        if packet_count <= connection_state.in_flight:
+            connection_state.in_flight -= packet_count
         else:
             logger.warning(
                 f'{packet_count} completed for {connection_handle} '
-                f'but only {in_flight_for_connection} in flight'
+                f'but only {connection_state.in_flight} in flight'
             )
-            self._in_flight_per_connection[connection_handle] = 0
+            connection_state.in_flight = 0
+        if connection_state.in_flight == 0:
+            connection_state.drained.set()
 
         if packet_count <= self._in_flight:
             self._in_flight -= packet_count
@@ -180,6 +190,13 @@ class DataPacketQueue(utils.EventEmitter):
 
         self._check_queue()
         self.emit('flow')
+
+    async def drain(self, connection_handle: int) -> None:
+        """Wait until there are no pending packets for a connection."""
+        if not (connection_state := self._connection_state.get(connection_handle)):
+            raise ValueError('no such connection')
+
+        await connection_state.drained.wait()
 
 
 # -----------------------------------------------------------------------------
@@ -234,16 +251,16 @@ class IsoLink:
 
 # -----------------------------------------------------------------------------
 class Host(utils.EventEmitter):
-    connections: Dict[int, Connection]
-    cis_links: Dict[int, IsoLink]
-    bis_links: Dict[int, IsoLink]
-    sco_links: Dict[int, ScoLink]
+    connections: dict[int, Connection]
+    cis_links: dict[int, IsoLink]
+    bis_links: dict[int, IsoLink]
+    sco_links: dict[int, ScoLink]
     bigs: dict[int, set[int]]
     acl_packet_queue: Optional[DataPacketQueue] = None
     le_acl_packet_queue: Optional[DataPacketQueue] = None
     iso_packet_queue: Optional[DataPacketQueue] = None
     hci_sink: Optional[TransportSink] = None
-    hci_metadata: Dict[str, Any]
+    hci_metadata: dict[str, Any]
     long_term_key_provider: Optional[
         Callable[[int, bytes, int], Awaitable[Optional[bytes]]]
     ]
@@ -813,7 +830,7 @@ class Host(utils.EventEmitter):
         ) != 0
 
     @property
-    def supported_commands(self) -> Set[int]:
+    def supported_commands(self) -> set[int]:
         return set(
             op_code
             for op_code, mask in hci.HCI_SUPPORTED_COMMANDS_MASKS.items()
@@ -836,8 +853,8 @@ class Host(utils.EventEmitter):
     def on_packet(self, packet: bytes) -> None:
         try:
             hci_packet = hci.HCI_Packet.from_bytes(packet)
-        except Exception as error:
-            logger.warning(f'!!! error parsing packet from bytes: {error}')
+        except Exception:
+            logger.exception('!!! error parsing packet from bytes')
             return
 
         if self.ready or (
@@ -1127,11 +1144,19 @@ class Host(utils.EventEmitter):
         else:
             self.emit('connection_phy_update_failure', connection.handle, event.status)
 
-    def on_hci_le_advertising_report_event(self, event):
+    def on_hci_le_advertising_report_event(
+        self,
+        event: (
+            hci.HCI_LE_Advertising_Report_Event
+            | hci.HCI_LE_Extended_Advertising_Report_Event
+        ),
+    ):
         for report in event.reports:
             self.emit('advertising_report', report)
 
-    def on_hci_le_extended_advertising_report_event(self, event):
+    def on_hci_le_extended_advertising_report_event(
+        self, event: hci.HCI_LE_Extended_Advertising_Report_Event
+    ):
         self.on_hci_le_advertising_report_event(event)
 
     def on_hci_le_advertising_set_terminated_event(self, event):
@@ -1262,7 +1287,24 @@ class Host(utils.EventEmitter):
             self.cis_links[event.connection_handle] = IsoLink(
                 handle=event.connection_handle, packet_queue=self.iso_packet_queue
             )
-            self.emit('cis_establishment', event.connection_handle)
+            self.emit(
+                'cis_establishment',
+                event.connection_handle,
+                event.cig_sync_delay,
+                event.cis_sync_delay,
+                event.transport_latency_c_to_p,
+                event.transport_latency_p_to_c,
+                event.phy_c_to_p,
+                event.phy_p_to_c,
+                event.nse,
+                event.bn_c_to_p,
+                event.bn_p_to_c,
+                event.ft_c_to_p,
+                event.ft_p_to_c,
+                event.max_pdu_c_to_p,
+                event.max_pdu_p_to_c,
+                event.iso_interval,
+            )
         else:
             self.emit(
                 'cis_establishment_failure', event.connection_handle, event.status
@@ -1350,6 +1392,15 @@ class Host(utils.EventEmitter):
     def on_hci_synchronous_connection_changed_event(self, event):
         pass
 
+    def on_hci_mode_change_event(self, event: hci.HCI_Mode_Change_Event):
+        self.emit(
+            'mode_change',
+            event.connection_handle,
+            event.status,
+            event.current_mode,
+            event.interval,
+        )
+
     def on_hci_role_change_event(self, event):
         if event.status == hci.HCI_SUCCESS:
             logger.debug(
@@ -1365,6 +1416,10 @@ class Host(utils.EventEmitter):
             self.emit('role_change_failure', event.bd_addr, event.status)
 
     def on_hci_le_data_length_change_event(self, event):
+        if (connection := self.connections.get(event.connection_handle)) is None:
+            logger.warning('!!! DATA LENGTH CHANGE: unknown handle')
+            return
+
         self.emit(
             'connection_data_length_change',
             event.connection_handle,
@@ -1385,7 +1440,7 @@ class Host(utils.EventEmitter):
                 event.status,
             )
 
-    def on_hci_encryption_change_event(self, event):
+    def on_hci_encryption_change_event(self, event: hci.HCI_Encryption_Change_Event):
         # Notify the client
         if event.status == hci.HCI_SUCCESS:
             self.emit(
@@ -1399,7 +1454,9 @@ class Host(utils.EventEmitter):
                 'connection_encryption_failure', event.connection_handle, event.status
             )
 
-    def on_hci_encryption_change_v2_event(self, event):
+    def on_hci_encryption_change_v2_event(
+        self, event: hci.HCI_Encryption_Change_V2_Event
+    ):
         # Notify the client
         if event.status == hci.HCI_SUCCESS:
             self.emit(
@@ -1520,13 +1577,15 @@ class Host(utils.EventEmitter):
         self.emit('inquiry_complete')
 
     def on_hci_inquiry_result_with_rssi_event(self, event):
-        for response in event.responses:
+        for bd_addr, class_of_device, rssi in zip(
+            event.bd_addr, event.class_of_device, event.rssi
+        ):
             self.emit(
                 'inquiry_result',
-                response.bd_addr,
-                response.class_of_device,
+                bd_addr,
+                class_of_device,
                 b'',
-                response.rssi,
+                rssi,
             )
 
     def on_hci_extended_inquiry_result_event(self, event):
@@ -1585,6 +1644,16 @@ class Host(utils.EventEmitter):
 
     def on_hci_le_cs_subevent_result_continue_event(self, event):
         self.emit('cs_subevent_result_continue', event)
+
+    def on_hci_le_subrate_change_event(self, event: hci.HCI_LE_Subrate_Change_Event):
+        self.emit(
+            'le_subrate_change',
+            event.connection_handle,
+            event.subrate_factor,
+            event.peripheral_latency,
+            event.continuation_number,
+            event.supervision_timeout,
+        )
 
     def on_hci_vendor_event(self, event):
         self.emit('vendor_event', event)

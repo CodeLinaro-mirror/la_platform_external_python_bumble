@@ -16,8 +16,6 @@
 # Imports
 # -----------------------------------------------------------------------------
 import asyncio
-import logging
-import os
 import time
 from typing import Optional
 
@@ -30,6 +28,7 @@ from bumble import hci
 from bumble import rfcomm
 from bumble import transport
 from bumble import utils
+import bumble.logging
 
 
 # -----------------------------------------------------------------------------
@@ -406,7 +405,7 @@ class ClientBridge:
 # -----------------------------------------------------------------------------
 async def run(device_config, hci_transport, bridge):
     print("<<< connecting to HCI...")
-    async with await transport.open_transport_or_link(hci_transport) as (
+    async with await transport.open_transport(hci_transport) as (
         hci_source,
         hci_sink,
     ):
@@ -515,6 +514,6 @@ def client(context, bluetooth_address, tcp_host, tcp_port, authenticate, encrypt
 
 
 # -----------------------------------------------------------------------------
-logging.basicConfig(level=os.environ.get("BUMBLE_LOGLEVEL", "WARNING").upper())
 if __name__ == "__main__":
+    bumble.logging.setup_basic_logging("WARNING")
     cli(obj={})  # pylint: disable=no-value-for-parameter
