@@ -15,10 +15,8 @@
 # -----------------------------------------------------------------------------
 # Imports
 # -----------------------------------------------------------------------------
-import logging
 import asyncio
 import sys
-import os
 
 from bumble.gatt import (
     GATT_CHARACTERISTIC_USER_DESCRIPTION_DESCRIPTOR,
@@ -32,7 +30,8 @@ from bumble.device import Device
 from bumble.host import Host
 from bumble.controller import Controller
 from bumble.link import LocalLink
-from bumble.transport import open_transport_or_link
+from bumble.transport import open_transport
+import bumble.logging
 
 
 # -----------------------------------------------------------------------------
@@ -49,7 +48,7 @@ async def main() -> None:
         return
 
     print('>>> connecting to HCI...')
-    async with await open_transport_or_link(sys.argv[3]) as hci_transport:
+    async with await open_transport(sys.argv[3]) as hci_transport:
         print('>>> connected')
 
         # Create a local link
@@ -105,5 +104,5 @@ async def main() -> None:
 
 
 # -----------------------------------------------------------------------------
-logging.basicConfig(level=os.environ.get('BUMBLE_LOGLEVEL', 'DEBUG').upper())
+bumble.logging.setup_basic_logging('DEBUG')
 asyncio.run(main())

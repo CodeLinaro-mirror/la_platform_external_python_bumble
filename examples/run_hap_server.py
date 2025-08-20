@@ -16,13 +16,10 @@
 # Imports
 # -----------------------------------------------------------------------------
 import asyncio
-import logging
 import sys
-import os
 
 from bumble.core import AdvertisingData
 from bumble.device import Device
-from bumble import att
 from bumble.profiles.hap import (
     HearingAccessService,
     HearingAidFeatures,
@@ -33,8 +30,9 @@ from bumble.profiles.hap import (
     WritablePresetsSupport,
     PresetRecord,
 )
+from bumble.transport import open_transport
+import bumble.logging
 
-from bumble.transport import open_transport_or_link
 
 server_features = HearingAidFeatures(
     HearingAidType.MONAURAL_HEARING_AID,
@@ -57,7 +55,7 @@ async def main() -> None:
         return
 
     print('<<< connecting to HCI...')
-    async with await open_transport_or_link(sys.argv[2]) as hci_transport:
+    async with await open_transport(sys.argv[2]) as hci_transport:
         print('<<< connected')
 
         device = Device.from_config_file_with_hci(
@@ -103,5 +101,5 @@ async def main() -> None:
 
 
 # -----------------------------------------------------------------------------
-logging.basicConfig(level=os.environ.get('BUMBLE_LOGLEVEL', 'DEBUG').upper())
+bumble.logging.setup_basic_logging('DEBUG')
 asyncio.run(main())
