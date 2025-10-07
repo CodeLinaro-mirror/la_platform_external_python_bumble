@@ -15,14 +15,13 @@
 # -----------------------------------------------------------------------------
 # Imports
 # -----------------------------------------------------------------------------
-import logging
 import asyncio
 import sys
-import os
 
 from bumble.controller import Controller
 from bumble.link import LocalLink
-from bumble.transport import open_transport_or_link
+from bumble.transport import open_transport
+import bumble.logging
 
 
 # -----------------------------------------------------------------------------
@@ -42,7 +41,7 @@ async def async_main():
     transports = []
     controllers = []
     for index, transport_name in enumerate(sys.argv[1:]):
-        transport = await open_transport_or_link(transport_name)
+        transport = await open_transport(transport_name)
         transports.append(transport)
         controller = Controller(
             f'C{index}',
@@ -62,7 +61,7 @@ async def async_main():
 
 # -----------------------------------------------------------------------------
 def main():
-    logging.basicConfig(level=os.environ.get('BUMBLE_LOGLEVEL', 'INFO').upper())
+    bumble.logging.setup_basic_logging()
     asyncio.run(async_main())
 
 

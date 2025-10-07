@@ -15,15 +15,16 @@
 # -----------------------------------------------------------------------------
 # Imports
 # -----------------------------------------------------------------------------
-import logging
 import asyncio
-import os
+import logging
 
 import click
 
-from bumble import transport
+from bumble import company_ids, hci, transport
 from bumble.host import Host
 from bumble.drivers import rtk
+import bumble.logging
+
 
 # -----------------------------------------------------------------------------
 # Logging
@@ -50,7 +51,7 @@ def do_parse(firmware_path):
 
 # -----------------------------------------------------------------------------
 async def do_load(usb_transport, force):
-    async with await transport.open_transport_or_link(usb_transport) as (
+    async with await transport.open_transport(usb_transport) as (
         hci_source,
         hci_sink,
     ):
@@ -61,15 +62,27 @@ async def do_load(usb_transport, force):
         # Get the driver.
         driver = await rtk.Driver.for_host(host, force)
         if driver is None:
-            print("Firmware already loaded or no supported driver for this device.")
+            # Try to see if there's already a FW image loaded
+            firmware_version = await rtk.Driver.get_loaded_firmware_version(host)
+            if firmware_version is None:
+                print("Device not supported")
+                return
+
+            print(f"Firmware already loaded: 0x{firmware_version:08X}")
             return
 
-        await driver.download_firmware()
+        firmware_version = await driver.download_firmware()
+
+        if firmware_version is None:
+            print("Failed to load firmware")
+            return
+
+        print(f"Loaded firmware version 0x{firmware_version:08X}")
 
 
 # -----------------------------------------------------------------------------
 async def do_drop(usb_transport):
-    async with await transport.open_transport_or_link(usb_transport) as (
+    async with await transport.open_transport(usb_transport) as (
         hci_source,
         hci_sink,
     ):
@@ -106,13 +119,19 @@ async def do_info(usb_transport, force):
                 f"  Config:   {driver_info.config_name}\n"
             )
         else:
-            print("Firmware already loaded or no supported driver for this device.")
+            # Try to see if there's already a FW image loaded
+            firmware_version = await rtk.Driver.get_loaded_firmware_version(host)
+            if firmware_version is None:
+                print("Device not supported")
+                return
+
+            print(f"Firmware loaded: 0x{firmware_version:08X}")
 
 
 # -----------------------------------------------------------------------------
 @click.group()
 def main():
-    logging.basicConfig(level=os.environ.get('BUMBLE_LOGLEVEL', 'INFO').upper())
+    bumble.logging.setup_basic_logging()
 
 
 @main.command

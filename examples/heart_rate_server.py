@@ -20,16 +20,15 @@ import time
 import math
 import random
 import struct
-import logging
 import asyncio
-import os
 
 from bumble.core import AdvertisingData
 from bumble.device import Device
-from bumble.transport import open_transport_or_link
+from bumble.transport import open_transport
 from bumble.profiles.device_information_service import DeviceInformationService
 from bumble.profiles.heart_rate_service import HeartRateService
 from bumble.utils import AsyncRunner
+import bumble.logging
 
 
 # -----------------------------------------------------------------------------
@@ -39,7 +38,7 @@ async def main() -> None:
         print('example: python heart_rate_server.py device1.json usb:0')
         return
 
-    async with await open_transport_or_link(sys.argv[2]) as hci_transport:
+    async with await open_transport(sys.argv[2]) as hci_transport:
         device = Device.from_config_file_with_hci(
             sys.argv[1], hci_transport.source, hci_transport.sink
         )
@@ -128,5 +127,5 @@ async def main() -> None:
 
 
 # -----------------------------------------------------------------------------
-logging.basicConfig(level=os.environ.get('BUMBLE_LOGLEVEL', 'DEBUG').upper())
+bumble.logging.setup_basic_logging('DEBUG')
 asyncio.run(main())

@@ -23,15 +23,12 @@ import contextlib
 import dataclasses
 import functools
 import logging
-import os
 import struct
 from typing import (
     Any,
     AsyncGenerator,
     Coroutine,
-    Deque,
     Optional,
-    Tuple,
 )
 
 import click
@@ -56,6 +53,8 @@ from bumble.profiles import bass
 import bumble.device
 import bumble.transport
 import bumble.utils
+import bumble.logging
+
 
 # -----------------------------------------------------------------------------
 # Logging
@@ -130,8 +129,8 @@ class BroadcastScanner(bumble.utils.EventEmitter):
         broadcast_audio_announcement: Optional[bap.BroadcastAudioAnnouncement] = None
         basic_audio_announcement: Optional[bap.BasicAudioAnnouncement] = None
         appearance: Optional[core.Appearance] = None
-        biginfo: Optional[bumble.device.BIGInfoAdvertisement] = None
-        manufacturer_data: Optional[Tuple[str, bytes]] = None
+        biginfo: Optional[bumble.device.BigInfoAdvertisement] = None
+        manufacturer_data: Optional[tuple[str, bytes]] = None
 
         def __post_init__(self) -> None:
             super().__init__()
@@ -257,8 +256,10 @@ class BroadcastScanner(bumble.utils.EventEmitter):
                 print(color('    SDU Interval: ', 'magenta'), self.biginfo.sdu_interval)
                 print(color('    Max SDU:      ', 'magenta'), self.biginfo.max_sdu)
                 print(color('    PHY:          ', 'magenta'), self.biginfo.phy.name)
-                print(color('    Framed:       ', 'magenta'), self.biginfo.framed)
-                print(color('    Encrypted:    ', 'magenta'), self.biginfo.encrypted)
+                print(color('    Framing:      ', 'magenta'), self.biginfo.framing.name)
+                print(
+                    color('    Encryption:   ', 'magenta'), self.biginfo.encryption.name
+                )
 
         def on_sync_establishment(self) -> None:
             self.emit('sync_establishment')
@@ -288,7 +289,7 @@ class BroadcastScanner(bumble.utils.EventEmitter):
             self.emit('change')
 
         def on_biginfo_advertisement(
-            self, advertisement: bumble.device.BIGInfoAdvertisement
+            self, advertisement: bumble.device.BigInfoAdvertisement
         ) -> None:
             self.biginfo = advertisement
             self.emit('change')
@@ -748,7 +749,9 @@ async def run_receive(
             sample_rate_hz=sampling_frequency.hz,
             num_channels=num_bis,
         )
-        lc3_queues: list[Deque[bytes]] = [collections.deque() for i in range(num_bis)]
+        lc3_queues: list[collections.deque[bytes]] = [
+            collections.deque() for i in range(num_bis)
+        ]
         packet_stats = [0, 0]
 
         audio_output = await audio_io.create_audio_output(output)
@@ -764,7 +767,7 @@ async def run_receive(
                 )
             )
 
-            def sink(queue: Deque[bytes], packet: hci.HCI_IsoDataPacket):
+            def sink(queue: collections.deque[bytes], packet: hci.HCI_IsoDataPacket):
                 # TODO: re-assemble fragments and detect errors
                 queue.append(packet.iso_sdu_fragment)
 
@@ -1233,7 +1236,7 @@ def transmit(
 
 
 def main():
-    logging.basicConfig(level=os.environ.get('BUMBLE_LOGLEVEL', 'INFO').upper())
+    bumble.logging.setup_basic_logging()
     auracast()
 
 

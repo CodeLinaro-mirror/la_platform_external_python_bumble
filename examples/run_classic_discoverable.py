@@ -17,11 +17,9 @@
 # -----------------------------------------------------------------------------
 import asyncio
 import sys
-import os
-import logging
 
 from bumble.device import Device
-from bumble.transport import open_transport_or_link
+from bumble.transport import open_transport
 from bumble.sdp import (
     DataElement,
     ServiceAttribute,
@@ -38,6 +36,8 @@ from bumble.core import (
     BT_AVDTP_PROTOCOL_ID,
     BT_ADVANCED_AUDIO_DISTRIBUTION_SERVICE,
 )
+import bumble.logging
+
 
 # -----------------------------------------------------------------------------
 SDP_SERVICE_RECORDS = {
@@ -98,7 +98,7 @@ async def main() -> None:
         return
 
     print('<<< connecting to HCI...')
-    async with await open_transport_or_link(sys.argv[2]) as hci_transport:
+    async with await open_transport(sys.argv[2]) as hci_transport:
         print('<<< connected')
 
         # Create a device
@@ -117,5 +117,5 @@ async def main() -> None:
 
 
 # -----------------------------------------------------------------------------
-logging.basicConfig(level=os.environ.get('BUMBLE_LOGLEVEL', 'DEBUG').upper())
+bumble.logging.setup_basic_logging('DEBUG')
 asyncio.run(main())
