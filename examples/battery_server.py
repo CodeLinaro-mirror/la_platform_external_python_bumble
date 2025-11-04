@@ -16,15 +16,16 @@
 # Imports
 # -----------------------------------------------------------------------------
 import asyncio
-import sys
 import random
 import struct
+import sys
 
+import bumble.logging
+from bumble import data_types
 from bumble.core import AdvertisingData
 from bumble.device import Device
-from bumble.transport import open_transport
 from bumble.profiles.battery_service import BatteryService
-import bumble.logging
+from bumble.transport import open_transport
 
 
 # -----------------------------------------------------------------------------
@@ -47,15 +48,14 @@ async def main() -> None:
         device.advertising_data = bytes(
             AdvertisingData(
                 [
-                    (
-                        AdvertisingData.COMPLETE_LOCAL_NAME,
-                        bytes('Bumble Battery', 'utf-8'),
+                    data_types.CompleteLocalName('Bumble Battery'),
+                    data_types.IncompleteListOf16BitServiceUUIDs(
+                        [battery_service.uuid]
                     ),
-                    (
-                        AdvertisingData.INCOMPLETE_LIST_OF_16_BIT_SERVICE_CLASS_UUIDS,
-                        bytes(battery_service.uuid),
+                    data_types.Appearance(
+                        data_types.Appearance.Category.WEARABLE_AUDIO_DEVICE,
+                        data_types.Appearance.WearableAudioDeviceSubcategory.EARBUD,
                     ),
-                    (AdvertisingData.APPEARANCE, struct.pack('<H', 0x0340)),
                 ]
             )
         )

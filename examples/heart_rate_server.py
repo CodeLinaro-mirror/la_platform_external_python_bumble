@@ -12,23 +12,25 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import asyncio
+import math
+import random
+import struct
+
 # -----------------------------------------------------------------------------
 # Imports
 # -----------------------------------------------------------------------------
 import sys
 import time
-import math
-import random
-import struct
-import asyncio
 
+import bumble.logging
+from bumble import data_types
 from bumble.core import AdvertisingData
 from bumble.device import Device
-from bumble.transport import open_transport
 from bumble.profiles.device_information_service import DeviceInformationService
 from bumble.profiles.heart_rate_service import HeartRateService
+from bumble.transport import open_transport
 from bumble.utils import AsyncRunner
-import bumble.logging
 
 
 # -----------------------------------------------------------------------------
@@ -87,15 +89,14 @@ async def main() -> None:
         device.advertising_data = bytes(
             AdvertisingData(
                 [
-                    (
-                        AdvertisingData.COMPLETE_LOCAL_NAME,
-                        bytes('Bumble Heart', 'utf-8'),
+                    data_types.CompleteLocalName('Bumble Heart'),
+                    data_types.IncompleteListOf16BitServiceUUIDs(
+                        [heart_rate_service.uuid]
                     ),
-                    (
-                        AdvertisingData.INCOMPLETE_LIST_OF_16_BIT_SERVICE_CLASS_UUIDS,
-                        bytes(heart_rate_service.uuid),
+                    data_types.Appearance(
+                        data_types.Appearance.Category.HEART_RATE_SENSOR,
+                        data_types.Appearance.HeartRateSensorSubcategory.GENERIC_HEART_RATE_SENSOR,
                     ),
-                    (AdvertisingData.APPEARANCE, struct.pack('<H', 0x0340)),
                 ]
             )
         )

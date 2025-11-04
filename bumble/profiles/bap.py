@@ -18,20 +18,17 @@
 # -----------------------------------------------------------------------------
 from __future__ import annotations
 
-from collections.abc import Sequence
 import dataclasses
 import enum
-import struct
 import functools
 import logging
+import struct
+from collections.abc import Sequence
+
 from typing_extensions import Self
 
-from bumble import core
-from bumble import hci
-from bumble import gatt
-from bumble import utils
+from bumble import core, data_types, gatt, hci, utils
 from bumble.profiles import le_audio
-
 
 # -----------------------------------------------------------------------------
 # Logging
@@ -260,11 +257,10 @@ class UnicastServerAdvertisingData:
         return bytes(
             core.AdvertisingData(
                 [
-                    (
-                        core.AdvertisingData.SERVICE_DATA_16_BIT_UUID,
+                    data_types.ServiceData16BitUUID(
+                        gatt.GATT_AUDIO_STREAM_CONTROL_SERVICE,
                         struct.pack(
-                            '<2sBIB',
-                            bytes(gatt.GATT_AUDIO_STREAM_CONTROL_SERVICE),
+                            '<BIB',
                             self.announcement_type,
                             self.available_audio_contexts,
                             len(self.metadata),
@@ -493,12 +489,8 @@ class BroadcastAudioAnnouncement:
         return bytes(
             core.AdvertisingData(
                 [
-                    (
-                        core.AdvertisingData.SERVICE_DATA_16_BIT_UUID,
-                        (
-                            bytes(gatt.GATT_BROADCAST_AUDIO_ANNOUNCEMENT_SERVICE)
-                            + bytes(self)
-                        ),
+                    data_types.ServiceData16BitUUID(
+                        gatt.GATT_BROADCAST_AUDIO_ANNOUNCEMENT_SERVICE, bytes(self)
                     )
                 ]
             )
@@ -610,12 +602,8 @@ class BasicAudioAnnouncement:
         return bytes(
             core.AdvertisingData(
                 [
-                    (
-                        core.AdvertisingData.SERVICE_DATA_16_BIT_UUID,
-                        (
-                            bytes(gatt.GATT_BASIC_AUDIO_ANNOUNCEMENT_SERVICE)
-                            + bytes(self)
-                        ),
+                    data_types.ServiceData16BitUUID(
+                        gatt.GATT_BASIC_AUDIO_ANNOUNCEMENT_SERVICE, bytes(self)
                     )
                 ]
             )

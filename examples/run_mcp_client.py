@@ -16,43 +16,40 @@
 # Imports
 # -----------------------------------------------------------------------------
 import asyncio
-import sys
 import json
+import sys
 from typing import Optional
 
-import websockets
+import websockets.asyncio.server
 
+import bumble.logging
+from bumble import data_types
 from bumble.core import AdvertisingData
 from bumble.device import (
-    Device,
-    AdvertisingParameters,
     AdvertisingEventProperties,
+    AdvertisingParameters,
     Connection,
+    Device,
     Peer,
 )
-from bumble.hci import (
-    CodecID,
-    CodingFormat,
-    OwnAddressType,
-)
+from bumble.hci import CodecID, CodingFormat, OwnAddressType
 from bumble.profiles.ascs import AudioStreamControlService
 from bumble.profiles.bap import (
+    AudioLocation,
     CodecSpecificCapabilities,
     ContextType,
-    AudioLocation,
-    SupportedSamplingFrequency,
     SupportedFrameDuration,
+    SupportedSamplingFrequency,
     UnicastServerAdvertisingData,
 )
 from bumble.profiles.mcp import (
-    MediaControlServiceProxy,
     GenericMediaControlServiceProxy,
-    MediaState,
     MediaControlPointOpcode,
+    MediaControlServiceProxy,
+    MediaState,
 )
 from bumble.profiles.pacs import PacRecord, PublishedAudioCapabilitiesService
 from bumble.transport import open_transport
-import bumble.logging
 
 
 # -----------------------------------------------------------------------------
@@ -104,23 +101,16 @@ async def main() -> None:
         )
         device.add_service(AudioStreamControlService(device, sink_ase_id=[1]))
 
-        ws: Optional[websockets.WebSocketServerProtocol] = None
+        ws: Optional[websockets.asyncio.server.ServerConnection] = None
         mcp: Optional[MediaControlServiceProxy] = None
 
         advertising_data = bytes(
             AdvertisingData(
                 [
-                    (
-                        AdvertisingData.COMPLETE_LOCAL_NAME,
-                        bytes('Bumble LE Audio', 'utf-8'),
-                    ),
-                    (
-                        AdvertisingData.FLAGS,
-                        bytes([AdvertisingData.LE_GENERAL_DISCOVERABLE_MODE_FLAG]),
-                    ),
-                    (
-                        AdvertisingData.INCOMPLETE_LIST_OF_16_BIT_SERVICE_CLASS_UUIDS,
-                        bytes(PublishedAudioCapabilitiesService.UUID),
+                    data_types.CompleteLocalName('Bumble LE Audio'),
+                    data_types.Flags(AdvertisingData.LE_GENERAL_DISCOVERABLE_MODE_FLAG),
+                    data_types.IncompleteListOf16BitServiceUUIDs(
+                        [PublishedAudioCapabilitiesService.UUID]
                     ),
                 ]
             )
@@ -172,7 +162,7 @@ async def main() -> None:
 
         device.on('connection', on_connection)
 
-        async def serve(websocket: websockets.WebSocketServerProtocol, _path):
+        async def serve(websocket: websockets.asyncio.server.ServerConnection):
             nonlocal ws
             ws = websocket
             async for message in websocket:
@@ -183,7 +173,7 @@ async def main() -> None:
                     )
             ws = None
 
-        await websockets.serve(serve, 'localhost', 8989)
+        await websockets.asyncio.server.serve(serve, 'localhost', 8989)
 
         await hci_transport.source.terminated
 

@@ -19,20 +19,18 @@ import asyncio
 import logging
 import threading
 import time
+from typing import Optional
 
 import usb.core
 import usb.util
-
-from typing import Optional
 from usb.core import Device as UsbDevice
 from usb.core import USBError
-from usb.util import CTRL_TYPE_CLASS, CTRL_RECIPIENT_OTHER
-from usb.legacy import REQ_SET_FEATURE, REQ_CLEAR_FEATURE, CLASS_HUB
+from usb.legacy import CLASS_HUB, REQ_CLEAR_FEATURE, REQ_SET_FEATURE
+from usb.util import CTRL_RECIPIENT_OTHER, CTRL_TYPE_CLASS
 
-from bumble.transport.common import Transport, ParserSource, TransportInitError
 from bumble import hci
 from bumble.colors import color
-
+from bumble.transport.common import ParserSource, Transport, TransportInitError
 
 # -----------------------------------------------------------------------------
 # Constant
@@ -285,7 +283,7 @@ async def open_pyusb_transport(spec: str) -> Transport:
         try:
             device = await _power_cycle(device)  # type: ignore
         except Exception as e:
-            logging.debug(e)
+            logging.debug(e, stack_info=True)
             logging.info(f"Unable to power cycle {hex(device.idVendor)} {hex(device.idProduct)}")  # type: ignore
 
     # Collect the metadata
@@ -371,9 +369,8 @@ async def _power_cycle(device: UsbDevice) -> UsbDevice:
 
             # Device needs to be find again otherwise it will appear as disconnected
             return usb.core.find(idVendor=device.idVendor, idProduct=device.idProduct)  # type: ignore
-        except USBError as e:
-            logger.error(f"Adjustment needed: Please revise the udev rule for device {hex(device.idVendor)}:{hex(device.idProduct)} for proper recognition.")  # type: ignore
-            logger.error(e)
+        except USBError:
+            logger.exception(f"Adjustment needed: Please revise the udev rule for device {hex(device.idVendor)}:{hex(device.idProduct)} for proper recognition.")  # type: ignore
 
     return device
 

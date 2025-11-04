@@ -17,33 +17,30 @@
 # -----------------------------------------------------------------------------
 from __future__ import annotations
 
-import logging
 import asyncio
 import collections
 import dataclasses
 import enum
-from typing import Callable, Optional, Union, TYPE_CHECKING
+import logging
+from typing import TYPE_CHECKING, Callable, Optional, Union
+
 from typing_extensions import Self
 
-
-from bumble import core
-from bumble import l2cap
-from bumble import sdp
-from bumble import utils
+from bumble import core, l2cap, sdp, utils
 from bumble.colors import color
 from bumble.core import (
-    UUID,
-    BT_RFCOMM_PROTOCOL_ID,
-    PhysicalTransport,
     BT_L2CAP_PROTOCOL_ID,
+    BT_RFCOMM_PROTOCOL_ID,
+    UUID,
     InvalidArgumentError,
-    InvalidStateError,
     InvalidPacketError,
+    InvalidStateError,
+    PhysicalTransport,
     ProtocolError,
 )
 
 if TYPE_CHECKING:
-    from bumble.device import Device, Connection
+    from bumble.device import Connection, Device
 
 # -----------------------------------------------------------------------------
 # Logging
@@ -677,10 +674,14 @@ class DLC(utils.EventEmitter):
         while (self.tx_buffer and self.tx_credits > 0) or rx_credits_needed > 0:
             # Get the next chunk, up to MTU size
             if rx_credits_needed > 0:
-                chunk = bytes([rx_credits_needed]) + self.tx_buffer[: self.mtu - 1]
-                self.tx_buffer = self.tx_buffer[len(chunk) - 1 :]
+                chunk = bytes([rx_credits_needed])
                 self.rx_credits += rx_credits_needed
-                tx_credit_spent = len(chunk) > 1
+                if self.tx_buffer and self.tx_credits > 0:
+                    chunk += self.tx_buffer[: self.mtu - 1]
+                    self.tx_buffer = self.tx_buffer[len(chunk) - 1 :]
+                    tx_credit_spent = True
+                else:
+                    tx_credit_spent = False
             else:
                 chunk = self.tx_buffer[: self.mtu]
                 self.tx_buffer = self.tx_buffer[len(chunk) :]
@@ -1047,8 +1048,8 @@ class Client:
             self.l2cap_channel = await self.connection.create_l2cap_channel(
                 spec=l2cap.ClassicChannelSpec(psm=RFCOMM_PSM, mtu=self.l2cap_mtu)
             )
-        except ProtocolError as error:
-            logger.warning(f'L2CAP connection failed: {error}')
+        except ProtocolError:
+            logger.exception('L2CAP connection failed')
             raise
 
         assert self.l2cap_channel is not None

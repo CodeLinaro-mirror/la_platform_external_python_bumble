@@ -16,35 +16,32 @@
 # Imports
 # -----------------------------------------------------------------------------
 import asyncio
-import sys
-import secrets
 import json
+import secrets
+import sys
 from typing import Optional
 
-import websockets
+import websockets.asyncio.server
 
+import bumble.logging
+from bumble import data_types
 from bumble.core import AdvertisingData
-from bumble.device import Device, AdvertisingParameters, AdvertisingEventProperties
-from bumble.hci import (
-    CodecID,
-    CodingFormat,
-    OwnAddressType,
-)
+from bumble.device import AdvertisingEventProperties, AdvertisingParameters, Device
+from bumble.hci import CodecID, CodingFormat, OwnAddressType
 from bumble.profiles.ascs import AudioStreamControlService
 from bumble.profiles.bap import (
-    UnicastServerAdvertisingData,
+    AudioLocation,
     CodecSpecificCapabilities,
     ContextType,
-    AudioLocation,
-    SupportedSamplingFrequency,
     SupportedFrameDuration,
+    SupportedSamplingFrequency,
+    UnicastServerAdvertisingData,
 )
-from bumble.profiles.pacs import PacRecord, PublishedAudioCapabilitiesService
 from bumble.profiles.cap import CommonAudioServiceService
 from bumble.profiles.csip import CoordinatedSetIdentificationService, SirkType
+from bumble.profiles.pacs import PacRecord, PublishedAudioCapabilitiesService
 from bumble.profiles.vcs import VolumeControlService
 from bumble.transport import open_transport
-import bumble.logging
 
 
 def dumps_volume_state(volume_setting: int, muted: int, change_counter: int) -> str:
@@ -113,7 +110,7 @@ async def main() -> None:
         vcs = VolumeControlService()
         device.add_service(vcs)
 
-        ws: Optional[websockets.WebSocketServerProtocol] = None
+        ws: Optional[websockets.asyncio.server.ServerConnection] = None
 
         def on_volume_state_change():
             if ws:
@@ -131,23 +128,14 @@ async def main() -> None:
             bytes(
                 AdvertisingData(
                     [
-                        (
-                            AdvertisingData.COMPLETE_LOCAL_NAME,
-                            bytes('Bumble LE Audio', 'utf-8'),
+                        data_types.CompleteLocalName('Bumble LE Audio'),
+                        data_types.Flags(
+                            AdvertisingData.LE_GENERAL_DISCOVERABLE_MODE_FLAG
+                            | AdvertisingData.BR_EDR_HOST_FLAG
+                            | AdvertisingData.BR_EDR_CONTROLLER_FLAG
                         ),
-                        (
-                            AdvertisingData.FLAGS,
-                            bytes(
-                                [
-                                    AdvertisingData.LE_GENERAL_DISCOVERABLE_MODE_FLAG
-                                    | AdvertisingData.BR_EDR_HOST_FLAG
-                                    | AdvertisingData.BR_EDR_CONTROLLER_FLAG
-                                ]
-                            ),
-                        ),
-                        (
-                            AdvertisingData.INCOMPLETE_LIST_OF_16_BIT_SERVICE_CLASS_UUIDS,
-                            bytes(PublishedAudioCapabilitiesService.UUID),
+                        data_types.IncompleteListOf16BitServiceUUIDs(
+                            [PublishedAudioCapabilitiesService.UUID]
                         ),
                     ]
                 )
@@ -164,7 +152,7 @@ async def main() -> None:
             advertising_data=advertising_data,
         )
 
-        async def serve(websocket: websockets.WebSocketServerProtocol, _path):
+        async def serve(websocket: websockets.asyncio.server.ServerConnection):
             nonlocal ws
             await websocket.send(
                 dumps_volume_state(vcs.volume_setting, vcs.muted, vcs.change_counter)
@@ -178,7 +166,7 @@ async def main() -> None:
                 await device.notify_subscribers(vcs.volume_state)
             ws = None
 
-        await websockets.serve(serve, 'localhost', 8989)
+        await websockets.asyncio.server.serve(serve, 'localhost', 8989)
 
         await hci_transport.source.terminated
 

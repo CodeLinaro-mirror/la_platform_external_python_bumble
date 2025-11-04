@@ -16,6 +16,7 @@
 # Imports
 # -----------------------------------------------------------------------------
 from __future__ import annotations
+
 import asyncio
 import collections
 import enum
@@ -33,10 +34,10 @@ from typing import (
     Union,
     overload,
 )
-from typing_extensions import Self
 
 import pyee
 import pyee.asyncio
+from typing_extensions import Self
 
 from bumble.colors import color
 
@@ -317,10 +318,8 @@ class AsyncRunner:
                 item = await self.queue.get()
                 try:
                     await item
-                except Exception as error:
-                    logger.warning(
-                        f'{color("!!! Exception in work queue:", "red")} {error}'
-                    )
+                except Exception:
+                    logger.exception(color("!!! Exception in work queue", "red"))
 
     # Shared default queue
     default_queue = WorkQueue()
@@ -499,6 +498,22 @@ class OpenIntEnum(enum.IntEnum):
         obj._value_ = value
         obj._name_ = f"{cls.__name__}[{value}]"
         return obj
+
+
+# -----------------------------------------------------------------------------
+class CompatibleIntFlag(enum.IntFlag):
+    """
+    Subclass of `enum.IntFlag` with a `composite_name` property that behaves like the
+    `name` property of the `enum.IntFlag` implementation for python vesions >= 3.11
+    """
+
+    @property
+    def composite_name(self) -> str:
+        return '|'.join(
+            name
+            for flag in self.__class__
+            if self.value & flag.value and (name := flag.name) is not None
+        )
 
 
 # -----------------------------------------------------------------------------

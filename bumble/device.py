@@ -16,24 +16,22 @@
 # Imports
 # -----------------------------------------------------------------------------
 from __future__ import annotations
+
 import asyncio
 import collections
-from collections.abc import Iterable, Sequence
-from contextlib import (
-    asynccontextmanager,
-    AsyncExitStack,
-    closing,
-)
 import copy
-from dataclasses import dataclass, field
-from enum import Enum, IntEnum
 import functools
 import itertools
 import json
 import logging
 import secrets
 import sys
+from collections.abc import Iterable, Sequence
+from contextlib import AsyncExitStack, asynccontextmanager, closing
+from dataclasses import dataclass, field
+from enum import Enum, IntEnum
 from typing import (
+    TYPE_CHECKING,
     Any,
     Awaitable,
     Callable,
@@ -43,47 +41,47 @@ from typing import (
     Union,
     cast,
     overload,
-    TYPE_CHECKING,
 )
+
 from typing_extensions import Self
 
-
-from bumble.colors import color
+from bumble import (
+    core,
+    data_types,
+    gatt,
+    gatt_client,
+    gatt_server,
+    hci,
+    l2cap,
+    pairing,
+    sdp,
+    smp,
+    utils,
+)
 from bumble.att import ATT_CID, ATT_DEFAULT_MTU, ATT_PDU
-from bumble.gatt import Attribute, Characteristic, Descriptor, Service
-from bumble.host import DataPacketQueue, Host
-from bumble.profiles.gap import GenericAccessService
+from bumble.colors import color
 from bumble.core import (
-    PhysicalTransport,
     AdvertisingData,
     BaseBumbleError,
-    ConnectionParameterUpdateError,
     CommandTimeoutError,
+    ConnectionParameterUpdateError,
     ConnectionPHY,
     InvalidArgumentError,
     InvalidOperationError,
     InvalidStateError,
     NotSupportedError,
     OutOfResourcesError,
+    PhysicalTransport,
     UnreachableError,
 )
-from bumble import utils
-from bumble.keys import (
-    KeyStore,
-    PairingKeys,
-)
-from bumble import hci
-from bumble import pairing
-from bumble import gatt_client
-from bumble import gatt_server
-from bumble import smp
-from bumble import sdp
-from bumble import l2cap
-from bumble import core
+from bumble.gatt import Attribute, Characteristic, Descriptor, Service
+from bumble.host import DataPacketQueue, Host
+from bumble.keys import KeyStore, PairingKeys
 from bumble.profiles import gatt_service
+from bumble.profiles.gap import GenericAccessService
 
 if TYPE_CHECKING:
-    from bumble.transport.common import TransportSource, TransportSink
+    from bumble.transport.common import TransportSink, TransportSource
 
 _T = TypeVar('_T')
 
@@ -267,7 +265,7 @@ class ExtendedAdvertisement(Advertisement):
 
 # -----------------------------------------------------------------------------
 class AdvertisementDataAccumulator:
-    def __init__(self, passive=False):
+    def __init__(self, passive: bool = False):
         self.passive = passive
         self.last_advertisement = None
         self.last_data = b''
@@ -1166,14 +1164,11 @@ class BigSync(utils.EventEmitter):
             logger.error('BIG Sync %d is not active.', self.big_handle)
             return
 
-        with closing(utils.EventWatcher()) as watcher:
-            terminated = asyncio.Event()
-            watcher.once(self, BigSync.Event.TERMINATION, lambda _: terminated.set())
-            await self.device.send_command(
-                hci.HCI_LE_BIG_Terminate_Sync_Command(big_handle=self.big_handle),
-                check_result=True,
-            )
-            await terminated.wait()
+        await self.device.send_command(
+            hci.HCI_LE_BIG_Terminate_Sync_Command(big_handle=self.big_handle),
+            check_result=True,
+        )
+        self.state = BigSync.State.TERMINATED
 
 
 # -----------------------------------------------------------------------------
@@ -1249,7 +1244,7 @@ class LePhyOptions:
     PREFER_S_2_CODED_PHY = 1
     PREFER_S_8_CODED_PHY = 2
 
-    def __init__(self, coded_phy_preference=0):
+    def __init__(self, coded_phy_preference: int = 0):
         self.coded_phy_preference = coded_phy_preference
 
     def __int__(self):
@@ -1458,6 +1453,8 @@ class _IsoLink:
     handle: int
     device: Device
     sink: Callable[[hci.HCI_IsoDataPacket], Any] | None = None
+    data_paths: set[_IsoLink.Direction]
+    _data_path_lock: asyncio.Lock
 
     class Direction(IntEnum):
         HOST_TO_CONTROLLER = (
@@ -1466,6 +1463,10 @@ class _IsoLink:
         CONTROLLER_TO_HOST = (
             hci.HCI_LE_Setup_ISO_Data_Path_Command.Direction.CONTROLLER_TO_HOST
         )
+
+    def __init__(self) -> None:
+        self._data_path_lock = asyncio.Lock()
+        self.data_paths = set()
 
     async def setup_data_path(
         self,
@@ -1487,37 +1488,45 @@ class _IsoLink:
         Raises:
             HCI_Error: When command complete status is not HCI_SUCCESS.
         """
-        await self.device.send_command(
-            hci.HCI_LE_Setup_ISO_Data_Path_Command(
-                connection_handle=self.handle,
-                data_path_direction=direction,
-                data_path_id=data_path_id,
-                codec_id=codec_id or hci.CodingFormat(hci.CodecID.TRANSPARENT),
-                controller_delay=controller_delay,
-                codec_configuration=codec_configuration,
-            ),
-            check_result=True,
-        )
+        async with self._data_path_lock:
+            if direction in self.data_paths:
+                return
+            await self.device.send_command(
+                hci.HCI_LE_Setup_ISO_Data_Path_Command(
+                    connection_handle=self.handle,
+                    data_path_direction=direction,
+                    data_path_id=data_path_id,
+                    codec_id=codec_id or hci.CodingFormat(hci.CodecID.TRANSPARENT),
+                    controller_delay=controller_delay,
+                    codec_configuration=codec_configuration,
+                ),
+                check_result=True,
+            )
+            self.data_paths.add(direction)
 
-    async def remove_data_path(self, directions: Iterable[_IsoLink.Direction]) -> int:
+    async def remove_data_path(self, directions: Iterable[_IsoLink.Direction]) -> None:
         """Remove a data path with controller on given direction.
 
         Args:
             direction: Direction of data path.
 
-        Returns:
-            Command status.
+        Raises:
+            HCI_Error: When command complete status is not HCI_SUCCESS.
         """
-        response = await self.device.send_command(
-            hci.HCI_LE_Remove_ISO_Data_Path_Command(
-                connection_handle=self.handle,
-                data_path_direction=sum(
-                    1 << direction for direction in set(directions)
+        async with self._data_path_lock:
+            directions_to_remove = set(directions).intersection(self.data_paths)
+            if not directions_to_remove:
+                return
+            await self.device.send_command(
+                hci.HCI_LE_Remove_ISO_Data_Path_Command(
+                    connection_handle=self.handle,
+                    data_path_direction=sum(
+                        1 << direction for direction in directions_to_remove
+                    ),
                 ),
-            ),
-            check_result=False,
-        )
-        return response.return_parameters.status
+                check_result=True,
+            )
+            self.data_paths.difference_update(directions_to_remove)
 
     def write(self, sdu: bytes) -> None:
         """Write an ISO SDU."""
@@ -1627,7 +1636,8 @@ class CisLink(utils.EventEmitter, _IsoLink):
     EVENT_ESTABLISHMENT_FAILURE: ClassVar[str] = "establishment_failure"
 
     def __post_init__(self) -> None:
-        super().__init__()
+        utils.EventEmitter.__init__(self)
+        _IsoLink.__init__(self)
 
     async def disconnect(
         self, reason: int = hci.HCI_REMOTE_USER_TERMINATED_CONNECTION_ERROR
@@ -1643,6 +1653,7 @@ class BisLink(_IsoLink):
     sink: Callable[[hci.HCI_IsoDataPacket], Any] | None = None
 
     def __post_init__(self) -> None:
+        super().__init__()
         self.device = self.big.device
 
 
@@ -1697,6 +1708,7 @@ class Connection(utils.CompositeEventEmitter):
     self_address: hci.Address
     self_resolvable_address: Optional[hci.Address]
     peer_address: hci.Address
+    peer_name: Optional[str]
     peer_resolvable_address: Optional[hci.Address]
     peer_le_features: Optional[hci.LeFeatureMask]
     role: hci.Role
@@ -1786,15 +1798,22 @@ class Connection(utils.CompositeEventEmitter):
 
     @dataclass
     class Parameters:
-        connection_interval: float  # Connection interval, in milliseconds. [LE only]
-        peripheral_latency: int  # Peripheral latency, in number of intervals. [LE only]
-        supervision_timeout: float  # Supervision timeout, in milliseconds.
-        subrate_factor: int = (
-            1  # See Bluetooth spec Vol 6, Part B - 4.5.1 Connection events
-        )
-        continuation_number: int = (
-            0  # See Bluetooth spec Vol 6, Part B - 4.5.1 Connection events
-        )
+        """
+        LE connection parameters.
+
+        Attributes:
+          connection_interval: Connection interval, in milliseconds.
+          peripheral_latency: Peripheral latency, in number of intervals.
+          supervision_timeout: Supervision timeout, in milliseconds.
+          subrate_factor: See Bluetooth spec Vol 6, Part B - 4.5.1 Connection events
+          continuation_number: See Bluetooth spec Vol 6, Part B - 4.5.1 Connection events
+        """
+
+        connection_interval: float
+        peripheral_latency: int
+        supervision_timeout: float
+        subrate_factor: int = 1
+        continuation_number: int = 0
 
     def __init__(
         self,
@@ -1835,36 +1854,6 @@ class Connection(utils.CompositeEventEmitter):
         self.cs_configs = {}
         self.cs_procedures = {}
 
-    # [Classic only]
-    @classmethod
-    def incomplete(cls, device, peer_address, role):
-        """
-        Instantiate an incomplete connection (ie. one waiting for a HCI Connection
-        Complete event).
-        Once received it shall be completed using the `.complete` method.
-        """
-        return cls(
-            device,
-            None,
-            PhysicalTransport.BR_EDR,
-            device.public_address,
-            None,
-            peer_address,
-            None,
-            role,
-            None,
-        )
-
-    # [Classic only]
-    def complete(self, handle, parameters):
-        """
-        Finish an incomplete connection upon completion.
-        """
-        assert self.handle is None
-        assert self.transport == PhysicalTransport.BR_EDR
-        self.handle = handle
-        self.parameters = parameters
-
     @property
     def role_name(self):
         if self.role is None:
@@ -1876,7 +1865,7 @@ class Connection(utils.CompositeEventEmitter):
         return f'UNKNOWN[{self.role}]'
 
     @property
-    def is_encrypted(self):
+    def is_encrypted(self) -> bool:
         return self.encryption != 0
 
     @property
@@ -1885,16 +1874,6 @@ class Connection(utils.CompositeEventEmitter):
 
     def send_l2cap_pdu(self, cid: int, pdu: bytes) -> None:
         self.device.send_l2cap_pdu(self.handle, cid, pdu)
-
-    @utils.deprecated("Please use create_l2cap_channel()")
-    async def open_l2cap_channel(
-        self,
-        psm,
-        max_credits=DEVICE_DEFAULT_L2CAP_COC_MAX_CREDITS,
-        mtu=DEVICE_DEFAULT_L2CAP_COC_MTU,
-        mps=DEVICE_DEFAULT_L2CAP_COC_MPS,
-    ):
-        return await self.device.open_l2cap_channel(self, psm, max_credits, mtu, mps)
 
     @overload
     async def create_l2cap_channel(
@@ -1947,7 +1926,7 @@ class Connection(utils.CompositeEventEmitter):
             self.remove_listener(self.EVENT_DISCONNECTION, abort.set_result)
             self.remove_listener(self.EVENT_DISCONNECTION_FAILURE, abort.set_exception)
 
-    async def set_data_length(self, tx_octets, tx_time) -> None:
+    async def set_data_length(self, tx_octets: int, tx_time: int) -> None:
         return await self.device.set_data_length(self, tx_octets, tx_time)
 
     async def update_parameters(
@@ -1977,7 +1956,12 @@ class Connection(utils.CompositeEventEmitter):
             use_l2cap=use_l2cap,
         )
 
-    async def set_phy(self, tx_phys=None, rx_phys=None, phy_options=None):
+    async def set_phy(
+        self,
+        tx_phys: Optional[Iterable[hci.Phy]] = None,
+        rx_phys: Optional[Iterable[hci.Phy]] = None,
+        phy_options: int = 0,
+    ):
         return await self.device.set_connection_phy(self, tx_phys, rx_phys, phy_options)
 
     async def get_phy(self) -> ConnectionPHY:
@@ -2076,9 +2060,7 @@ class DeviceConfiguration:
     connectable: bool = True
     discoverable: bool = True
     advertising_data: bytes = bytes(
-        AdvertisingData(
-            [(AdvertisingData.COMPLETE_LOCAL_NAME, bytes(DEVICE_DEFAULT_NAME, 'utf-8'))]
-        )
+        AdvertisingData([data_types.CompleteLocalName(DEVICE_DEFAULT_NAME)])
     )
     irk: bytes = bytes(16)  # This really must be changed for any level of security
     keystore: Optional[str] = None
@@ -2122,9 +2104,7 @@ class DeviceConfiguration:
             self.advertising_data = bytes.fromhex(advertising_data)
         elif name is not None:
             self.advertising_data = bytes(
-                AdvertisingData(
-                    [(AdvertisingData.COMPLETE_LOCAL_NAME, bytes(self.name, 'utf-8'))]
-                )
+                AdvertisingData([data_types.CompleteLocalName(self.name)])
             )
 
         # Load scan response data
@@ -2176,7 +2156,7 @@ class DeviceConfiguration:
 # Decorator that converts the first argument from a connection handle to a connection
 def with_connection_from_handle(function):
     @functools.wraps(function)
-    def wrapper(self, connection_handle, *args, **kwargs):
+    def wrapper(self, connection_handle: int, *args, **kwargs):
         if (connection := self.lookup_connection(connection_handle)) is None:
             raise ObjectLookupError(
                 f'no connection for handle: 0x{connection_handle:04x}'
@@ -2189,12 +2169,12 @@ def with_connection_from_handle(function):
 # Decorator that converts the first argument from a bluetooth address to a connection
 def with_connection_from_address(function):
     @functools.wraps(function)
-    def wrapper(self, address, *args, **kwargs):
-        if connection := self.pending_connections.get(address, False):
-            return function(self, connection, *args, **kwargs)
-        for connection in self.connections.values():
+    def wrapper(device: Device, address: hci.Address, *args, **kwargs):
+        if connection := device.pending_connections.get(address):
+            return function(device, connection, *args, **kwargs)
+        for connection in device.connections.values():
             if connection.peer_address == address:
-                return function(self, connection, *args, **kwargs)
+                return function(device, connection, *args, **kwargs)
         raise ObjectLookupError('no connection for address')
 
     return wrapper
@@ -2204,13 +2184,13 @@ def with_connection_from_address(function):
 # connection
 def try_with_connection_from_address(function):
     @functools.wraps(function)
-    def wrapper(self, address, *args, **kwargs):
-        if connection := self.pending_connections.get(address, False):
-            return function(self, connection, address, *args, **kwargs)
-        for connection in self.connections.values():
+    def wrapper(device: Device, address: hci.Address, *args, **kwargs):
+        if connection := device.pending_connections.get(address):
+            return function(device, connection, address, *args, **kwargs)
+        for connection in device.connections.values():
             if connection.peer_address == address:
-                return function(self, connection, address, *args, **kwargs)
-        return function(self, None, address, *args, **kwargs)
+                return function(device, connection, address, *args, **kwargs)
+        return function(device, None, address, *args, **kwargs)
 
     return wrapper
 
@@ -2283,8 +2263,6 @@ class Device(utils.CompositeEventEmitter):
     EVENT_CONNECTION_FAILURE = "connection_failure"
     EVENT_SCO_REQUEST = "sco_request"
     EVENT_INQUIRY_COMPLETE = "inquiry_complete"
-    EVENT_REMOTE_NAME = "remote_name"
-    EVENT_REMOTE_NAME_FAILURE = "remote_name_failure"
     EVENT_SCO_CONNECTION = "sco_connection"
     EVENT_SCO_CONNECTION_FAILURE = "sco_connection_failure"
     EVENT_CIS_REQUEST = "cis_request"
@@ -2380,7 +2358,9 @@ class Device(utils.CompositeEventEmitter):
         self.le_connecting = False
         self.disconnecting = False
         self.connections = {}  # Connections, by connection handle
-        self.pending_connections = {}  # Connections, by BD address (BR/EDR only)
+        self.pending_connections = (
+            {}
+        )  # Pending connections, by BD address (BR/EDR only)
         self.sco_links = {}  # ScoLinks, by connection handle (BR/EDR only)
         self.cis_links = {}  # CisLinks, by connection handle (LE only)
         self._pending_cis = {}  # (CIS_ID, CIG_ID), by CIS_handle
@@ -2608,36 +2588,6 @@ class Device(utils.CompositeEventEmitter):
             None,
         )
 
-    @utils.deprecated("Please use create_l2cap_server()")
-    def register_l2cap_server(self, psm, server) -> int:
-        return self.l2cap_channel_manager.register_server(psm, server)
-
-    @utils.deprecated("Please use create_l2cap_server()")
-    def register_l2cap_channel_server(
-        self,
-        psm,
-        server,
-        max_credits=DEVICE_DEFAULT_L2CAP_COC_MAX_CREDITS,
-        mtu=DEVICE_DEFAULT_L2CAP_COC_MTU,
-        mps=DEVICE_DEFAULT_L2CAP_COC_MPS,
-    ):
-        return self.l2cap_channel_manager.register_le_coc_server(
-            psm, server, max_credits, mtu, mps
-        )
-
-    @utils.deprecated("Please use create_l2cap_channel()")
-    async def open_l2cap_channel(
-        self,
-        connection,
-        psm,
-        max_credits=DEVICE_DEFAULT_L2CAP_COC_MAX_CREDITS,
-        mtu=DEVICE_DEFAULT_L2CAP_COC_MTU,
-        mps=DEVICE_DEFAULT_L2CAP_COC_MPS,
-    ):
-        return await self.l2cap_channel_manager.open_le_coc(
-            connection, psm, max_credits, mtu, mps
-        )
-
     @overload
     async def create_l2cap_channel(
         self,
@@ -2705,7 +2655,7 @@ class Device(utils.CompositeEventEmitter):
     def send_l2cap_pdu(self, connection_handle: int, cid: int, pdu: bytes) -> None:
         self.host.send_l2cap_pdu(connection_handle, cid, pdu)
 
-    async def send_command(self, command, check_result=False):
+    async def send_command(self, command: hci.HCI_Command, check_result: bool = False):
         try:
             return await asyncio.wait_for(
                 self.host.send_command(command, check_result), self.command_timeout
@@ -2962,13 +2912,13 @@ class Device(utils.CompositeEventEmitter):
     def supports_le_features(self, feature: hci.LeFeatureMask) -> bool:
         return self.host.supports_le_features(feature)
 
-    def supports_le_phy(self, phy: int) -> bool:
-        if phy == hci.HCI_LE_1M_PHY:
+    def supports_le_phy(self, phy: hci.Phy) -> bool:
+        if phy == hci.Phy.LE_1M:
             return True
 
-        feature_map: dict[int, hci.LeFeatureMask] = {
-            hci.HCI_LE_2M_PHY: hci.LeFeatureMask.LE_2M_PHY,
-            hci.HCI_LE_CODED_PHY: hci.LeFeatureMask.LE_CODED_PHY,
+        feature_map: dict[hci.Phy, hci.LeFeatureMask] = {
+            hci.Phy.LE_2M: hci.LeFeatureMask.LE_2M_PHY,
+            hci.Phy.LE_CODED: hci.LeFeatureMask.LE_CODED_PHY,
         }
         if phy not in feature_map:
             raise InvalidArgumentError('invalid PHY')
@@ -3245,8 +3195,8 @@ class Device(utils.CompositeEventEmitter):
                     else 0
                 )
                 await advertising_set.start(duration=duration)
-            except Exception as error:
-                logger.exception(f'failed to start advertising set: {error}')
+            except Exception:
+                logger.exception('failed to start advertising set')
                 await advertising_set.remove()
                 raise
 
@@ -3572,7 +3522,9 @@ class Device(utils.CompositeEventEmitter):
         self.discovering = False
 
     @host_event_handler
-    def on_inquiry_result(self, address, class_of_device, data, rssi):
+    def on_inquiry_result(
+        self, address: hci.Address, class_of_device: int, data: bytes, rssi: int
+    ):
         self.emit(
             self.EVENT_INQUIRY_RESULT,
             address,
@@ -3581,7 +3533,9 @@ class Device(utils.CompositeEventEmitter):
             rssi,
         )
 
-    async def set_scan_enable(self, inquiry_scan_enabled, page_scan_enabled):
+    async def set_scan_enable(
+        self, inquiry_scan_enabled: bool, page_scan_enabled: bool
+    ):
         if inquiry_scan_enabled and page_scan_enabled:
             scan_enable = 0x03
         elif page_scan_enabled:
@@ -3601,14 +3555,7 @@ class Device(utils.CompositeEventEmitter):
             # Synthesize an inquiry response if none is set already
             if self.inquiry_response is None:
                 self.inquiry_response = bytes(
-                    AdvertisingData(
-                        [
-                            (
-                                AdvertisingData.COMPLETE_LOCAL_NAME,
-                                bytes(self.name, 'utf-8'),
-                            )
-                        ]
-                    )
+                    AdvertisingData([data_types.CompleteLocalName(self.name)])
                 )
 
             # Update the controller
@@ -3714,6 +3661,7 @@ class Device(utils.CompositeEventEmitter):
                 # If the address is not parsable, assume it is a name instead
                 always_resolve = False
                 logger.debug('looking for peer by name')
+                assert isinstance(peer_address, str)
                 peer_address = await self.find_peer_by_name(
                     peer_address, transport
                 )  # TODO: timeout
@@ -3741,7 +3689,7 @@ class Device(utils.CompositeEventEmitter):
             ):
                 pending_connection.set_result(connection)
 
-        def on_connection_failure(error):
+        def on_connection_failure(error: core.ConnectionError):
             if transport == PhysicalTransport.LE or (
                 # match BR/EDR connection failure event against peer address
                 error.transport == transport
@@ -3881,8 +3829,16 @@ class Device(utils.CompositeEventEmitter):
                     )
             else:
                 # Save pending connection
-                self.pending_connections[peer_address] = Connection.incomplete(
-                    self, peer_address, hci.Role.CENTRAL
+                self.pending_connections[peer_address] = Connection(
+                    device=self,
+                    handle=0,
+                    transport=core.PhysicalTransport.BR_EDR,
+                    self_address=self.public_address,
+                    self_resolvable_address=None,
+                    peer_address=peer_address,
+                    peer_resolvable_address=None,
+                    role=hci.Role.CENTRAL,
+                    parameters=Connection.Parameters(0, 0, 0),
                 )
 
                 # TODO: allow passing other settings
@@ -3961,6 +3917,7 @@ class Device(utils.CompositeEventEmitter):
             except InvalidArgumentError:
                 # If the address is not parsable, assume it is a name instead
                 logger.debug('looking for peer by name')
+                assert isinstance(peer_address, str)
                 peer_address = await self.find_peer_by_name(
                     peer_address, PhysicalTransport.BR_EDR
                 )  # TODO: timeout
@@ -4019,7 +3976,7 @@ class Device(utils.CompositeEventEmitter):
             ):
                 pending_connection.set_result(connection)
 
-        def on_connection_failure(error):
+        def on_connection_failure(error: core.ConnectionError):
             if (
                 error.transport == PhysicalTransport.BR_EDR
                 and error.peer_address == peer_address
@@ -4029,12 +3986,20 @@ class Device(utils.CompositeEventEmitter):
         self.on(self.EVENT_CONNECTION, on_connection)
         self.on(self.EVENT_CONNECTION_FAILURE, on_connection_failure)
 
-        # Save pending connection, with the Peripheral hci.role.
+        # Save Peripheral hci.role.
         # Even if we requested a role switch in the hci.HCI_Accept_Connection_Request
         # command, this connection is still considered Peripheral until an eventual
         # role change event.
-        self.pending_connections[peer_address] = Connection.incomplete(
-            self, peer_address, hci.Role.PERIPHERAL
+        self.pending_connections[peer_address] = Connection(
+            device=self,
+            handle=0,
+            transport=core.PhysicalTransport.BR_EDR,
+            self_address=self.public_address,
+            self_resolvable_address=None,
+            peer_address=peer_address,
+            peer_resolvable_address=None,
+            role=hci.Role.PERIPHERAL,
+            parameters=Connection.Parameters(0, 0, 0),
         )
 
         try:
@@ -4056,7 +4021,7 @@ class Device(utils.CompositeEventEmitter):
             self.pending_connections.pop(peer_address, None)
 
     @asynccontextmanager
-    async def connect_as_gatt(self, peer_address):
+    async def connect_as_gatt(self, peer_address: Union[hci.Address, str]):
         async with AsyncExitStack() as stack:
             connection = await stack.enter_async_context(
                 await self.connect(peer_address)
@@ -4092,6 +4057,7 @@ class Device(utils.CompositeEventEmitter):
                 except InvalidArgumentError:
                     # If the address is not parsable, assume it is a name instead
                     logger.debug('looking for peer by name')
+                    assert isinstance(peer_address, str)
                     peer_address = await self.find_peer_by_name(
                         peer_address, PhysicalTransport.BR_EDR
                     )  # TODO: timeout
@@ -4137,7 +4103,9 @@ class Device(utils.CompositeEventEmitter):
             )
             self.disconnecting = False
 
-    async def set_data_length(self, connection, tx_octets, tx_time) -> None:
+    async def set_data_length(
+        self, connection: Connection, tx_octets: int, tx_time: int
+    ) -> None:
         if tx_octets < 0x001B or tx_octets > 0x00FB:
             raise InvalidArgumentError('tx_octets must be between 0x001B and 0x00FB')
 
@@ -4240,7 +4208,11 @@ class Device(utils.CompositeEventEmitter):
         )
 
     async def set_connection_phy(
-        self, connection, tx_phys=None, rx_phys=None, phy_options=None
+        self,
+        connection: Connection,
+        tx_phys: Optional[Iterable[hci.Phy]] = None,
+        rx_phys: Optional[Iterable[hci.Phy]] = None,
+        phy_options: int = 0,
     ):
         if not self.host.supports_command(hci.HCI_LE_SET_PHY_COMMAND):
             logger.warning('ignoring request, command not supported')
@@ -4256,7 +4228,7 @@ class Device(utils.CompositeEventEmitter):
                 all_phys=all_phys_bits,
                 tx_phys=hci.phy_list_to_bits(tx_phys),
                 rx_phys=hci.phy_list_to_bits(rx_phys),
-                phy_options=0 if phy_options is None else int(phy_options),
+                phy_options=phy_options,
             )
         )
 
@@ -4267,7 +4239,11 @@ class Device(utils.CompositeEventEmitter):
             )
             raise hci.HCI_StatusError(result)
 
-    async def set_default_phy(self, tx_phys=None, rx_phys=None):
+    async def set_default_phy(
+        self,
+        tx_phys: Optional[Iterable[hci.Phy]] = None,
+        rx_phys: Optional[Iterable[hci.Phy]] = None,
+    ):
         all_phys_bits = (1 if tx_phys is None else 0) | (
             (1 if rx_phys is None else 0) << 1
         )
@@ -4305,7 +4281,7 @@ class Device(utils.CompositeEventEmitter):
             check_result=True,
         )
 
-    async def find_peer_by_name(self, name, transport=PhysicalTransport.LE):
+    async def find_peer_by_name(self, name: str, transport=PhysicalTransport.LE):
         """
         Scan for a peer with a given name and return its address.
         """
@@ -4320,7 +4296,7 @@ class Device(utils.CompositeEventEmitter):
             if local_name == name:
                 peer_address.set_result(address)
 
-        listener = None
+        listener: Optional[Callable[..., None]] = None
         was_scanning = self.scanning
         was_discovering = self.discovering
         try:
@@ -4426,10 +4402,10 @@ class Device(utils.CompositeEventEmitter):
     def smp_session_proxy(self, session_proxy: type[smp.Session]) -> None:
         self.smp_manager.session_proxy = session_proxy
 
-    async def pair(self, connection):
+    async def pair(self, connection: Connection):
         return await self.smp_manager.pair(connection)
 
-    def request_pairing(self, connection):
+    def request_pairing(self, connection: Connection):
         return self.smp_manager.request_pairing(connection)
 
     async def get_long_term_key(
@@ -4517,7 +4493,7 @@ class Device(utils.CompositeEventEmitter):
                 on_authentication_failure,
             )
 
-    async def encrypt(self, connection, enable=True):
+    async def encrypt(self, connection: Connection, enable: bool = True):
         if not enable and connection.transport == PhysicalTransport.LE:
             raise InvalidArgumentError('`enable` parameter is classic only.')
 
@@ -4527,7 +4503,7 @@ class Device(utils.CompositeEventEmitter):
         def on_encryption_change():
             pending_encryption.set_result(None)
 
-        def on_encryption_failure(error_code):
+        def on_encryption_failure(error_code: int):
             pending_encryption.set_exception(hci.HCI_Error(error_code))
 
         connection.on(
@@ -4610,8 +4586,8 @@ class Device(utils.CompositeEventEmitter):
         try:
             await self.keystore.update(address, keys)
             await self.refresh_resolving_list()
-        except Exception as error:
-            logger.warning(f'!!! error while storing keys: {error}')
+        except Exception:
+            logger.exception('!!! error while storing keys')
         else:
             self.emit(self.EVENT_KEY_STORE_UPDATE)
 
@@ -4619,10 +4595,10 @@ class Device(utils.CompositeEventEmitter):
     async def switch_role(self, connection: Connection, role: hci.Role):
         pending_role_change = asyncio.get_running_loop().create_future()
 
-        def on_role_change(new_role):
+        def on_role_change(new_role: hci.Role):
             pending_role_change.set_result(new_role)
 
-        def on_role_change_failure(error_code):
+        def on_role_change_failure(error_code: int):
             pending_role_change.set_exception(hci.HCI_Error(error_code))
 
         connection.on(connection.EVENT_ROLE_CHANGE, on_role_change)
@@ -4749,7 +4725,7 @@ class Device(utils.CompositeEventEmitter):
         self, cis_acl_pairs: Sequence[tuple[int, Connection]]
     ) -> list[CisLink]:
         for cis_handle, acl_connection in cis_acl_pairs:
-            cis_id, cig_id = self._pending_cis.pop(cis_handle)
+            cis_id, cig_id = self._pending_cis[cis_handle]
             self.cis_links[cis_handle] = CisLink(
                 device=self,
                 acl_connection=acl_connection,
@@ -4765,6 +4741,7 @@ class Device(utils.CompositeEventEmitter):
             }
 
             def on_cis_establishment(cis_link: CisLink) -> None:
+                self._pending_cis.pop(cis_link.handle)
                 if pending_future := pending_cis_establishments.get(cis_link.handle):
                     pending_future.set_result(cis_link)
 
@@ -5212,10 +5189,10 @@ class Device(utils.CompositeEventEmitter):
         ):
             connection.emit(connection.EVENT_LINK_KEY)
 
-    def add_service(self, service):
+    def add_service(self, service: gatt.Service):
         self.gatt_server.add_service(service)
 
-    def add_services(self, services):
+    def add_services(self, services: Iterable[gatt.Service]):
         self.gatt_server.add_services(services)
 
     def add_default_services(
@@ -5311,10 +5288,10 @@ class Device(utils.CompositeEventEmitter):
     @host_event_handler
     def on_advertising_set_termination(
         self,
-        status,
-        advertising_handle,
-        connection_handle,
-        number_of_completed_extended_advertising_events,
+        status: int,
+        advertising_handle: int,
+        connection_handle: int,
+        number_of_completed_extended_advertising_events: int,
     ):
         # Legacy advertising set is also one of extended advertising sets.
         if not (
@@ -5482,15 +5459,47 @@ class Device(utils.CompositeEventEmitter):
         self.emit(self.EVENT_CONNECTION, connection)
 
     @host_event_handler
-    def on_connection(
+    def on_classic_connection(
         self,
         connection_handle: int,
-        transport: core.PhysicalTransport,
+        peer_address: hci.Address,
+    ) -> None:
+        if connection := self.pending_connections.pop(peer_address, None):
+            connection.handle = connection_handle
+        else:
+            # Create a new connection
+            connection = Connection(
+                device=self,
+                handle=connection_handle,
+                transport=PhysicalTransport.BR_EDR,
+                self_address=self.public_address,
+                self_resolvable_address=None,
+                peer_address=peer_address,
+                peer_resolvable_address=None,
+                role=hci.Role.PERIPHERAL,
+                parameters=Connection.Parameters(0.0, 0, 0.0),
+            )
+
+        logger.debug('*** %s', connection)
+        if connection_handle in self.connections:
+            logger.warning(
+                'new connection reuses the same handle as a previous connection'
+            )
+        self.connections[connection_handle] = connection
+
+        self.emit(self.EVENT_CONNECTION, connection)
+
+    @host_event_handler
+    def on_le_connection(
+        self,
+        connection_handle: int,
         peer_address: hci.Address,
         self_resolvable_address: Optional[hci.Address],
         peer_resolvable_address: Optional[hci.Address],
         role: hci.Role,
-        connection_parameters: Optional[core.ConnectionParameters],
+        connection_interval: int,
+        peripheral_latency: int,
+        supervision_timeout: int,
     ) -> None:
         # Convert all-zeros addresses into None.
         if self_resolvable_address == hci.Address.ANY_RANDOM:
@@ -5509,19 +5518,6 @@ class Device(utils.CompositeEventEmitter):
             logger.warning(
                 'new connection reuses the same handle as a previous connection'
             )
-
-        if transport == PhysicalTransport.BR_EDR:
-            # Create a new connection
-            connection = self.pending_connections.pop(peer_address)
-            connection.complete(connection_handle, connection_parameters)
-            self.connections[connection_handle] = connection
-
-            # Emit an event to notify listeners of the new connection
-            self.emit(self.EVENT_CONNECTION, connection)
-
-            return
-
-        assert connection_parameters is not None
 
         if peer_resolvable_address is None:
             # Resolve the peer address if we can
@@ -5572,16 +5568,16 @@ class Device(utils.CompositeEventEmitter):
         connection = Connection(
             self,
             connection_handle,
-            transport,
+            PhysicalTransport.LE,
             self_address,
             self_resolvable_address,
             peer_address,
             peer_resolvable_address,
             role,
             Connection.Parameters(
-                connection_parameters.connection_interval * 1.25,
-                connection_parameters.peripheral_latency,
-                connection_parameters.supervision_timeout * 10.0,
+                connection_interval * 1.25,
+                peripheral_latency,
+                supervision_timeout * 10.0,
             ),
         )
         self.connections[connection_handle] = connection
@@ -5613,7 +5609,12 @@ class Device(utils.CompositeEventEmitter):
                 )
 
     @host_event_handler
-    def on_connection_failure(self, transport, peer_address, error_code):
+    def on_connection_failure(
+        self,
+        transport: hci.PhysicalTransport,
+        peer_address: hci.Address,
+        error_code: int,
+    ):
         logger.debug(
             f'*** Connection failed: {hci.HCI_Constant.error_name(error_code)}'
         )
@@ -5638,7 +5639,9 @@ class Device(utils.CompositeEventEmitter):
 
     # FIXME: Explore a delegate-model for BR/EDR wait connection #56.
     @host_event_handler
-    def on_connection_request(self, bd_addr, class_of_device, link_type):
+    def on_connection_request(
+        self, bd_addr: hci.Address, class_of_device: int, link_type: int
+    ):
         logger.debug(f'*** Connection request: {bd_addr}')
 
         # Handle SCO request.
@@ -5667,8 +5670,16 @@ class Device(utils.CompositeEventEmitter):
         # device configuration is set to accept any incoming connection
         elif self.classic_accept_any:
             # Save pending connection
-            self.pending_connections[bd_addr] = Connection.incomplete(
-                self, bd_addr, hci.Role.PERIPHERAL
+            self.pending_connections[bd_addr] = Connection(
+                device=self,
+                handle=0,
+                transport=core.PhysicalTransport.BR_EDR,
+                self_address=self.public_address,
+                self_resolvable_address=None,
+                peer_address=bd_addr,
+                peer_resolvable_address=None,
+                role=hci.Role.PERIPHERAL,
+                parameters=Connection.Parameters(0, 0, 0),
             )
 
             self.host.send_command_sync(
@@ -5732,7 +5743,7 @@ class Device(utils.CompositeEventEmitter):
 
     @host_event_handler
     @with_connection_from_handle
-    def on_connection_authentication(self, connection):
+    def on_connection_authentication(self, connection: Connection):
         logger.debug(
             f'*** Connection Authentication: [0x{connection.handle:04X}] '
             f'{connection.peer_address} as {connection.role_name}'
@@ -5742,7 +5753,9 @@ class Device(utils.CompositeEventEmitter):
 
     @host_event_handler
     @with_connection_from_handle
-    def on_connection_authentication_failure(self, connection, error):
+    def on_connection_authentication_failure(
+        self, connection: Connection, error: core.ConnectionError
+    ):
         logger.debug(
             f'*** Connection Authentication Failure: [0x{connection.handle:04X}] '
             f'{connection.peer_address} as {connection.role_name}, error={error}'
@@ -5784,10 +5797,13 @@ class Device(utils.CompositeEventEmitter):
     @host_event_handler
     @with_connection_from_address
     def on_authentication_io_capability_response(
-        self, connection, io_capability, authentication_requirements
+        self,
+        connection: Connection,
+        io_capability: int,
+        authentication_requirements: int,
     ):
-        connection.peer_pairing_io_capability = io_capability
-        connection.peer_pairing_authentication_requirements = (
+        connection.pairing_peer_io_capability = io_capability
+        connection.pairing_peer_authentication_requirements = (
             authentication_requirements
         )
 
@@ -5798,7 +5814,7 @@ class Device(utils.CompositeEventEmitter):
         # Ask what the pairing config should be for this connection
         pairing_config = self.pairing_config_factory(connection)
         io_capability = pairing_config.delegate.classic_io_capability
-        peer_io_capability = connection.peer_pairing_io_capability
+        peer_io_capability = connection.pairing_peer_io_capability
 
         async def confirm() -> bool:
             # Ask the user to confirm the pairing, without display
@@ -5859,8 +5875,8 @@ class Device(utils.CompositeEventEmitter):
                         )
                     )
                     return
-            except Exception as error:
-                logger.warning(f'exception while confirming: {error}')
+            except Exception:
+                logger.exception('exception while confirming')
 
             await self.host.send_command(
                 hci.HCI_User_Confirmation_Request_Negative_Reply_Command(
@@ -5873,7 +5889,7 @@ class Device(utils.CompositeEventEmitter):
     # [Classic only]
     @host_event_handler
     @with_connection_from_address
-    def on_authentication_user_passkey_request(self, connection) -> None:
+    def on_authentication_user_passkey_request(self, connection: Connection) -> None:
         # Ask what the pairing config should be for this connection
         pairing_config = self.pairing_config_factory(connection)
 
@@ -5889,8 +5905,8 @@ class Device(utils.CompositeEventEmitter):
                         )
                     )
                     return
-            except Exception as error:
-                logger.warning(f'exception while asking for pass-key: {error}')
+            except Exception:
+                logger.exception('exception while asking for pass-key')
 
             await self.host.send_command(
                 hci.HCI_User_Passkey_Request_Negative_Reply_Command(
@@ -5916,7 +5932,7 @@ class Device(utils.CompositeEventEmitter):
     # [Classic only]
     @host_event_handler
     @with_connection_from_address
-    def on_pin_code_request(self, connection):
+    def on_pin_code_request(self, connection: Connection):
         # Classic legacy pairing
         # Ask what the pairing config should be for this connection
         pairing_config = self.pairing_config_factory(connection)
@@ -5960,7 +5976,9 @@ class Device(utils.CompositeEventEmitter):
     # [Classic only]
     @host_event_handler
     @with_connection_from_address
-    def on_authentication_user_passkey_notification(self, connection, passkey):
+    def on_authentication_user_passkey_notification(
+        self, connection: Connection, passkey: int
+    ):
         # Ask what the pairing config should be for this connection
         pairing_config = self.pairing_config_factory(connection)
 
@@ -5972,14 +5990,15 @@ class Device(utils.CompositeEventEmitter):
     # [Classic only]
     @host_event_handler
     @try_with_connection_from_address
-    def on_remote_name(self, connection: Connection, address, remote_name):
+    def on_remote_name(
+        self, connection: Optional[Connection], address: hci.Address, remote_name: bytes
+    ):
         # Try to decode the name
         try:
-            remote_name = remote_name.decode('utf-8')
             if connection:
-                connection.peer_name = remote_name
+                connection.peer_name = remote_name.decode('utf-8')
                 connection.emit(connection.EVENT_REMOTE_NAME)
-            self.emit(self.EVENT_REMOTE_NAME, address, remote_name)
+            self.emit(self.EVENT_REMOTE_NAME, address, remote_name.decode('utf-8'))
         except UnicodeDecodeError as error:
             logger.warning('peer name is not valid UTF-8')
             if connection:
@@ -5990,7 +6009,9 @@ class Device(utils.CompositeEventEmitter):
     # [Classic only]
     @host_event_handler
     @try_with_connection_from_address
-    def on_remote_name_failure(self, connection: Connection, address, error):
+    def on_remote_name_failure(
+        self, connection: Optional[Connection], address: hci.Address, error: int
+    ):
         if connection:
             connection.emit(connection.EVENT_REMOTE_NAME_FAILURE, error)
         self.emit(self.EVENT_REMOTE_NAME_FAILURE, address, error)
@@ -6191,7 +6212,7 @@ class Device(utils.CompositeEventEmitter):
 
     @host_event_handler
     @with_connection_from_handle
-    def on_connection_encryption_key_refresh(self, connection):
+    def on_connection_encryption_key_refresh(self, connection: Connection):
         logger.debug(
             f'*** Connection Key Refresh: [0x{connection.handle:04X}] '
             f'{connection.peer_address} as {connection.role_name}'
@@ -6201,27 +6222,27 @@ class Device(utils.CompositeEventEmitter):
     @host_event_handler
     @with_connection_from_handle
     def on_connection_parameters_update(
-        self, connection: Connection, connection_parameters: core.ConnectionParameters
+        self,
+        connection: Connection,
+        connection_interval: int,
+        peripheral_latency: int,
+        supervision_timeout: int,
     ):
         logger.debug(
             f'*** Connection Parameters Update: [0x{connection.handle:04X}] '
             f'{connection.peer_address} as {connection.role_name}, '
-            f'{connection_parameters}'
         )
-        if (
-            connection.parameters.connection_interval
-            != connection_parameters.connection_interval * 1.25
-        ):
+        if connection.parameters.connection_interval != connection_interval * 1.25:
             connection.parameters = Connection.Parameters(
-                connection_parameters.connection_interval * 1.25,
-                connection_parameters.peripheral_latency,
-                connection_parameters.supervision_timeout * 10.0,
+                connection_interval * 1.25,
+                peripheral_latency,
+                supervision_timeout * 10.0,
             )
         else:
             connection.parameters = Connection.Parameters(
-                connection_parameters.connection_interval * 1.25,
-                connection_parameters.peripheral_latency,
-                connection_parameters.supervision_timeout * 10.0,
+                connection_interval * 1.25,
+                peripheral_latency,
+                supervision_timeout * 10.0,
                 connection.parameters.subrate_factor,
                 connection.parameters.continuation_number,
             )
@@ -6229,7 +6250,9 @@ class Device(utils.CompositeEventEmitter):
 
     @host_event_handler
     @with_connection_from_handle
-    def on_connection_parameters_update_failure(self, connection, error):
+    def on_connection_parameters_update_failure(
+        self, connection: Connection, error: int
+    ):
         logger.debug(
             f'*** Connection Parameters Update Failed: [0x{connection.handle:04X}] '
             f'{connection.peer_address} as {connection.role_name}, '
@@ -6239,7 +6262,7 @@ class Device(utils.CompositeEventEmitter):
 
     @host_event_handler
     @with_connection_from_handle
-    def on_connection_phy_update(self, connection, phy):
+    def on_connection_phy_update(self, connection: Connection, phy: core.ConnectionPHY):
         logger.debug(
             f'*** Connection PHY Update: [0x{connection.handle:04X}] '
             f'{connection.peer_address} as {connection.role_name}, '
@@ -6249,7 +6272,7 @@ class Device(utils.CompositeEventEmitter):
 
     @host_event_handler
     @with_connection_from_handle
-    def on_connection_phy_update_failure(self, connection, error):
+    def on_connection_phy_update_failure(self, connection: Connection, error: int):
         logger.debug(
             f'*** Connection PHY Update Failed: [0x{connection.handle:04X}] '
             f'{connection.peer_address} as {connection.role_name}, '
@@ -6278,7 +6301,7 @@ class Device(utils.CompositeEventEmitter):
 
     @host_event_handler
     @with_connection_from_handle
-    def on_connection_att_mtu_update(self, connection, att_mtu):
+    def on_connection_att_mtu_update(self, connection: Connection, att_mtu: int):
         logger.debug(
             f'*** Connection ATT MTU Update: [0x{connection.handle:04X}] '
             f'{connection.peer_address} as {connection.role_name}, '
@@ -6290,7 +6313,12 @@ class Device(utils.CompositeEventEmitter):
     @host_event_handler
     @with_connection_from_handle
     def on_connection_data_length_change(
-        self, connection, max_tx_octets, max_tx_time, max_rx_octets, max_rx_time
+        self,
+        connection: Connection,
+        max_tx_octets: int,
+        max_tx_time: int,
+        max_rx_octets: int,
+        max_rx_time: int,
     ):
         logger.debug(
             f'*** Connection Data Length Change: [0x{connection.handle:04X}] '
@@ -6415,14 +6443,20 @@ class Device(utils.CompositeEventEmitter):
     # [Classic only]
     @host_event_handler
     @with_connection_from_address
-    def on_role_change(self, connection, new_role):
+    def on_role_change(
+        self,
+        connection: Connection,
+        new_role: hci.Role,
+    ):
         connection.role = new_role
         connection.emit(connection.EVENT_ROLE_CHANGE, new_role)
 
     # [Classic only]
     @host_event_handler
     @try_with_connection_from_address
-    def on_role_change_failure(self, connection, address, error):
+    def on_role_change_failure(
+        self, connection: Optional[Connection], address: hci.Address, error: int
+    ):
         if connection:
             connection.emit(connection.EVENT_ROLE_CHANGE_FAILURE, error)
         self.emit(self.EVENT_ROLE_CHANGE_FAILURE, address, error)
@@ -6436,7 +6470,7 @@ class Device(utils.CompositeEventEmitter):
     # [Classic only]
     @host_event_handler
     @with_connection_from_address
-    def on_classic_pairing_failure(self, connection: Connection, status) -> None:
+    def on_classic_pairing_failure(self, connection: Connection, status: int) -> None:
         connection.emit(connection.EVENT_CLASSIC_PAIRING_FAILURE, status)
 
     def on_pairing_start(self, connection: Connection) -> None:
@@ -6460,7 +6494,7 @@ class Device(utils.CompositeEventEmitter):
         connection.emit(connection.EVENT_PAIRING_FAILURE, reason)
 
     @with_connection_from_handle
-    def on_gatt_pdu(self, connection, pdu):
+    def on_gatt_pdu(self, connection: Connection, pdu: bytes):
         # Parse the L2CAP payload into an ATT PDU object
         att_pdu = ATT_PDU.from_bytes(pdu)
 
@@ -6482,7 +6516,7 @@ class Device(utils.CompositeEventEmitter):
             connection.gatt_server.on_gatt_pdu(connection, att_pdu)
 
     @with_connection_from_handle
-    def on_smp_pdu(self, connection, pdu):
+    def on_smp_pdu(self, connection: Connection, pdu: bytes):
         self.smp_manager.on_smp_pdu(connection, pdu)
 
     @host_event_handler

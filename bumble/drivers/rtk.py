@@ -17,10 +17,6 @@ Based on various online bits of information, including the Linux kernel.
 (see `drivers/bluetooth/btrtl.c`)
 """
 
-# -----------------------------------------------------------------------------
-# Imports
-# -----------------------------------------------------------------------------
-from dataclasses import dataclass, field
 import asyncio
 import enum
 import logging
@@ -31,9 +27,12 @@ import platform
 import struct
 import weakref
 
+# -----------------------------------------------------------------------------
+# Imports
+# -----------------------------------------------------------------------------
+from dataclasses import dataclass, field
 
-from bumble import core
-from bumble import hci
+from bumble import core, hci
 from bumble.drivers import common
 
 # -----------------------------------------------------------------------------
@@ -116,12 +115,14 @@ RTK_USB_PRODUCTS = {
     # Realtek 8761BUV
     (0x0B05, 0x190E),
     (0x0BDA, 0x8771),
+    (0x0BDA, 0x877B),
+    (0x0BDA, 0xA728),
+    (0x0BDA, 0xA729),
     (0x2230, 0x0016),
     (0x2357, 0x0604),
     (0x2550, 0x8761),
     (0x2B89, 0x8761),
     (0x7392, 0xC611),
-    (0x0BDA, 0x877B),
     # Realtek 8821AE
     (0x0B05, 0x17DC),
     (0x13D3, 0x3414),

@@ -16,19 +16,31 @@
 # Imports
 # -----------------------------------------------------------------------------
 from __future__ import annotations
+
 import collections
 import dataclasses
-from dataclasses import field
 import enum
 import functools
 import logging
 import secrets
 import struct
 from collections.abc import Sequence
-from typing import Any, Callable, Iterable, Optional, Union, TypeVar, ClassVar, cast
+from dataclasses import field
+from typing import (
+    Any,
+    Callable,
+    ClassVar,
+    Iterable,
+    Literal,
+    Optional,
+    TypeVar,
+    Union,
+    cast,
+)
+
 from typing_extensions import Self
 
-from bumble import crypto
+from bumble import crypto, utils
 from bumble.colors import color
 from bumble.core import (
     DeviceClass,
@@ -40,8 +52,6 @@ from bumble.core import (
     name_or_number,
     padded_bytes,
 )
-from bumble import utils
-
 
 # -----------------------------------------------------------------------------
 # Logging
@@ -111,23 +121,57 @@ def phy_list_to_bits(phys: Optional[Iterable[Phy]]) -> int:
 class SpecableEnum(utils.OpenIntEnum):
 
     @classmethod
-    def type_spec(cls, size: int):
-        return {'size': size, 'mapper': lambda x: cls(x).name}
+    def type_spec(cls, size: int, byteorder: Literal['little', 'big'] = 'little'):
+        return {
+            'serializer': lambda x: x.to_bytes(size, byteorder),
+            'parser': lambda data, offset: (
+                offset + size,
+                cls(int.from_bytes(data[offset : offset + size], byteorder)),
+            ),
+            'mapper': lambda x: cls(x).name,
+        }
 
     @classmethod
-    def type_metadata(cls, size: int, list_begin: bool = False, list_end: bool = False):
-        return metadata(cls.type_spec(size), list_begin=list_begin, list_end=list_end)
+    def type_metadata(
+        cls,
+        size: int,
+        list_begin: bool = False,
+        list_end: bool = False,
+        byteorder: Literal['little', 'big'] = 'little',
+    ):
+        return metadata(
+            cls.type_spec(size, byteorder),
+            list_begin=list_begin,
+            list_end=list_end,
+        )
 
 
 class SpecableFlag(enum.IntFlag):
 
     @classmethod
-    def type_spec(cls, size: int):
-        return {'size': size, 'mapper': lambda x: cls(x).name}
+    def type_spec(cls, size: int, byteorder: Literal['little', 'big'] = 'little'):
+        return {
+            'serializer': lambda x: x.to_bytes(size, byteorder),
+            'parser': lambda data, offset: (
+                offset + size,
+                cls(int.from_bytes(data[offset : offset + size], byteorder)),
+            ),
+            'mapper': lambda x: cls(x).name,
+        }
 
     @classmethod
-    def type_metadata(cls, size: int, list_begin: bool = False, list_end: bool = False):
-        return metadata(cls.type_spec(size), list_begin=list_begin, list_end=list_end)
+    def type_metadata(
+        cls,
+        size: int,
+        list_begin: bool = False,
+        list_end: bool = False,
+        byteorder: Literal['little', 'big'] = 'little',
+    ):
+        return metadata(
+            cls.type_spec(size, byteorder),
+            list_begin=list_begin,
+            list_end=list_end,
+        )
 
 
 # -----------------------------------------------------------------------------
@@ -1322,7 +1366,7 @@ class LeFeature(SpecableEnum):
     MONITORING_ADVERTISERS                         = 64
     FRAME_SPACE_UPDATE                             = 65
 
-class LeFeatureMask(enum.IntFlag):
+class LeFeatureMask(utils.CompatibleIntFlag):
     LE_ENCRYPTION                                  = 1 << LeFeature.LE_ENCRYPTION
     CONNECTION_PARAMETERS_REQUEST_PROCEDURE        = 1 << LeFeature.CONNECTION_PARAMETERS_REQUEST_PROCEDURE
     EXTENDED_REJECT_INDICATION                     = 1 << LeFeature.EXTENDED_REJECT_INDICATION
@@ -1463,7 +1507,7 @@ class LmpFeature(SpecableEnum):
     SLOT_AVAILABILITY_MASK                                       = 138
     TRAIN_NUDGING                                                = 139
 
-class LmpFeatureMask(enum.IntFlag):
+class LmpFeatureMask(utils.CompatibleIntFlag):
     # Page 0 (Legacy LMP features)
     LMP_3_SLOT_PACKETS                                           = (1 << LmpFeature.LMP_3_SLOT_PACKETS)
     LMP_5_SLOT_PACKETS                                           = (1 << LmpFeature.LMP_5_SLOT_PACKETS)
@@ -2135,6 +2179,7 @@ class Address:
             if len(address) == 12 + 5:
                 # Form with ':' separators
                 address = address.replace(':', '')
+
             self.address_bytes = bytes(reversed(bytes.fromhex(address)))
 
         if len(self.address_bytes) != 6:
@@ -3399,6 +3444,17 @@ class HCI_Write_Synchronous_Flow_Control_Enable_Command(HCI_Command):
 # -----------------------------------------------------------------------------
 @HCI_Command.command
 @dataclasses.dataclass
+class HCI_Set_Controller_To_Host_Flow_Control_Command(HCI_Command):
+    '''
+    See Bluetooth spec @ 7.3.38 Set Controller To Host Flow Control command
+    '''
+
+    flow_control_enable: int = field(metadata=metadata(1))
+
+
+# -----------------------------------------------------------------------------
+@HCI_Command.command
+@dataclasses.dataclass
 class HCI_Host_Buffer_Size_Command(HCI_Command):
     '''
     See Bluetooth spec @ 7.3.39 Host Buffer Size Command
@@ -4296,6 +4352,15 @@ class HCI_LE_Write_Suggested_Default_Data_Length_Command(HCI_Command):
 # -----------------------------------------------------------------------------
 @HCI_Command.command
 @dataclasses.dataclass
+class HCI_LE_Read_Local_P_256_Public_Key_Command(HCI_Command):
+    '''
+    See Bluetooth spec @ 7.8.36 LE LE Read Local P-256 Public Key command
+    '''
+
+
+# -----------------------------------------------------------------------------
+@HCI_Command.command
+@dataclasses.dataclass
 class HCI_LE_Add_Device_To_Resolving_List_Command(HCI_Command):
     '''
     See Bluetooth spec @ 7.8.38 LE Add Device To Resolving List Command
@@ -4317,6 +4382,15 @@ class HCI_LE_Add_Device_To_Resolving_List_Command(HCI_Command):
 class HCI_LE_Clear_Resolving_List_Command(HCI_Command):
     '''
     See Bluetooth spec @ 7.8.40 LE Clear Resolving List Command
+    '''
+
+
+# -----------------------------------------------------------------------------
+@HCI_Command.command
+@dataclasses.dataclass
+class HCI_LE_Read_Resolving_List_Size_Command(HCI_Command):
+    '''
+    See Bluetooth spec @ 7.8.41 LE Read Resolving List Size command
     '''
 
 
@@ -4986,6 +5060,15 @@ class HCI_LE_Periodic_Advertising_Terminate_Sync_Command(HCI_Command):
 # -----------------------------------------------------------------------------
 @HCI_Command.command
 @dataclasses.dataclass
+class HCI_LE_Read_Transmit_Power_Command(HCI_Command):
+    '''
+    See Bluetooth spec @ 7.8.74 LE Read Transmit Power command
+    '''
+
+
+# -----------------------------------------------------------------------------
+@HCI_Command.command
+@dataclasses.dataclass
 class HCI_LE_Set_Privacy_Mode_Command(HCI_Command):
     '''
     See Bluetooth spec @ 7.8.77 LE Set Privacy Mode Command
@@ -5257,7 +5340,7 @@ class HCI_LE_BIG_Terminate_Sync_Command(HCI_Command):
 
     return_parameters_fields = [
         ('status', STATUS_SPEC),
-        ('big_handle', 2),
+        ('big_handle', 1),
     ]
 
 
@@ -6421,7 +6504,9 @@ class HCI_LE_Create_BIG_Complete_Event(HCI_LE_Meta_Event):
     irc: int = field(metadata=metadata(1))
     max_pdu: int = field(metadata=metadata(2))
     iso_interval: int = field(metadata=metadata(2))
-    connection_handle: int = field(metadata=metadata(2, list_begin=True, list_end=True))
+    connection_handle: Sequence[int] = field(
+        metadata=metadata(2, list_begin=True, list_end=True)
+    )
 
 
 # -----------------------------------------------------------------------------
@@ -6453,7 +6538,9 @@ class HCI_LE_BIG_Sync_Established_Event(HCI_LE_Meta_Event):
     irc: int = field(metadata=metadata(1))
     max_pdu: int = field(metadata=metadata(2))
     iso_interval: int = field(metadata=metadata(2))
-    connection_handle: int = field(metadata=metadata(2, list_begin=True, list_end=True))
+    connection_handle: Sequence[int] = field(
+        metadata=metadata(2, list_begin=True, list_end=True)
+    )
 
 
 # -----------------------------------------------------------------------------
