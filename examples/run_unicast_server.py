@@ -18,33 +18,30 @@
 import asyncio
 import datetime
 import functools
-import sys
 import io
-import struct
 import secrets
+import struct
+import sys
 
+import bumble.logging
+from bumble import data_types
 from bumble.core import AdvertisingData
 from bumble.device import Device
-from bumble.hci import (
-    CodecID,
-    CodingFormat,
-    HCI_IsoDataPacket,
-)
+from bumble.hci import CodecID, CodingFormat, HCI_IsoDataPacket
 from bumble.profiles.ascs import AseStateMachine, AudioStreamControlService
 from bumble.profiles.bap import (
-    UnicastServerAdvertisingData,
-    CodecSpecificConfiguration,
-    CodecSpecificCapabilities,
-    ContextType,
     AudioLocation,
-    SupportedSamplingFrequency,
+    CodecSpecificCapabilities,
+    CodecSpecificConfiguration,
+    ContextType,
     SupportedFrameDuration,
+    SupportedSamplingFrequency,
+    UnicastServerAdvertisingData,
 )
 from bumble.profiles.cap import CommonAudioServiceService
 from bumble.profiles.csip import CoordinatedSetIdentificationService, SirkType
 from bumble.profiles.pacs import PacRecord, PublishedAudioCapabilitiesService
 from bumble.transport import open_transport
-import bumble.logging
 
 
 def _sink_pac_record() -> PacRecord:
@@ -115,23 +112,14 @@ async def main() -> None:
             bytes(
                 AdvertisingData(
                     [
-                        (
-                            AdvertisingData.COMPLETE_LOCAL_NAME,
-                            bytes('Bumble LE Audio', 'utf-8'),
+                        data_types.CompleteLocalName('Bumble LE Audio'),
+                        data_types.Flags(
+                            AdvertisingData.LE_GENERAL_DISCOVERABLE_MODE_FLAG
+                            | AdvertisingData.BR_EDR_HOST_FLAG
+                            | AdvertisingData.BR_EDR_CONTROLLER_FLAG
                         ),
-                        (
-                            AdvertisingData.FLAGS,
-                            bytes(
-                                [
-                                    AdvertisingData.LE_GENERAL_DISCOVERABLE_MODE_FLAG
-                                    | AdvertisingData.BR_EDR_HOST_FLAG
-                                    | AdvertisingData.BR_EDR_CONTROLLER_FLAG
-                                ]
-                            ),
-                        ),
-                        (
-                            AdvertisingData.INCOMPLETE_LIST_OF_16_BIT_SERVICE_CLASS_UUIDS,
-                            bytes(PublishedAudioCapabilitiesService.UUID),
+                        data_types.IncompleteListOf16BitServiceUUIDs(
+                            [PublishedAudioCapabilitiesService.UUID]
                         ),
                     ]
                 )

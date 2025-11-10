@@ -16,23 +16,20 @@
 # Imports
 # -----------------------------------------------------------------------------
 from __future__ import annotations
+
 import asyncio
 import json
-import sys
 import logging
+import sys
+from typing import Optional
 
-import websockets
+import websockets.asyncio.server
 
+import bumble.logging
+from bumble import a2dp, avc, avdtp, avrcp, utils
+from bumble.core import PhysicalTransport
 from bumble.device import Device
 from bumble.transport import open_transport
-from bumble.core import PhysicalTransport
-from bumble import avc
-from bumble import avrcp
-from bumble import avdtp
-from bumble import a2dp
-from bumble import utils
-import bumble.logging
-
 
 logger = logging.getLogger(__name__)
 
@@ -221,6 +218,8 @@ def on_avrcp_start(avrcp_protocol: avrcp.Protocol, websocket_server: WebSocketSe
 
 # -----------------------------------------------------------------------------
 class WebSocketServer:
+    socket: Optional[websockets.asyncio.server.ServerConnection]
+
     def __init__(
         self, avrcp_protocol: avrcp.Protocol, avrcp_delegate: Delegate
     ) -> None:
@@ -231,9 +230,9 @@ class WebSocketServer:
 
     async def start(self) -> None:
         # pylint: disable-next=no-member
-        await websockets.serve(self.serve, 'localhost', 8989)  # type: ignore
+        await websockets.asyncio.server.serve(self.serve, 'localhost', 8989)  # type: ignore
 
-    async def serve(self, socket, _path) -> None:
+    async def serve(self, socket: websockets.asyncio.server.ServerConnection) -> None:
         print('### WebSocket connected')
         self.socket = socket
         while True:

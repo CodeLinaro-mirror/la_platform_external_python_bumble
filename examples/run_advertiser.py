@@ -16,14 +16,15 @@
 # Imports
 # -----------------------------------------------------------------------------
 import asyncio
-import sys
 import struct
+import sys
 
+import bumble.logging
+from bumble import data_types
 from bumble.core import AdvertisingData
 from bumble.device import AdvertisingType, Device
 from bumble.hci import Address
 from bumble.transport import open_transport
-import bumble.logging
 
 
 # -----------------------------------------------------------------------------
@@ -60,7 +61,10 @@ async def main() -> None:
             device.scan_response_data = bytes(
                 AdvertisingData(
                     [
-                        (AdvertisingData.APPEARANCE, struct.pack('<H', 0x0340)),
+                        data_types.Appearance(
+                            data_types.Appearance.Category.HEART_RATE_SENSOR,
+                            data_types.Appearance.HeartRateSensorSubcategory.GENERIC_HEART_RATE_SENSOR,
+                        )
                     ]
                 )
             )

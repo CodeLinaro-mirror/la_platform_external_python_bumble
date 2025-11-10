@@ -20,31 +20,30 @@ from __future__ import annotations
 import asyncio
 import datetime
 import functools
-from importlib import resources
 import json
 import logging
 import pathlib
-import weakref
 import wave
+import weakref
+from importlib import resources
 
 try:
     import lc3  # type: ignore  # pylint: disable=E0401
 except ImportError as e:
     raise ImportError("Try `python -m pip install \".[lc3]\"`.") from e
 
-import click
 import aiohttp.web
+import click
 
 import bumble
-from bumble import utils
-from bumble.core import AdvertisingData
-from bumble.colors import color
-from bumble.device import Device, DeviceConfiguration, AdvertisingParameters, CisLink
-from bumble.transport import open_transport
-from bumble.profiles import ascs, bap, pacs
-from bumble.hci import Address, CodecID, CodingFormat, HCI_IsoDataPacket
 import bumble.logging
-
+from bumble import data_types, utils
+from bumble.colors import color
+from bumble.core import AdvertisingData
+from bumble.device import AdvertisingParameters, CisLink, Device, DeviceConfiguration
+from bumble.hci import Address, CodecID, CodingFormat, HCI_IsoDataPacket
+from bumble.profiles import ascs, bap, pacs
+from bumble.transport import open_transport
 
 # -----------------------------------------------------------------------------
 # Logging
@@ -331,22 +330,13 @@ class Speaker:
             advertising_data = bytes(
                 AdvertisingData(
                     [
-                        (
-                            AdvertisingData.COMPLETE_LOCAL_NAME,
-                            bytes(device_config.name, 'utf-8'),
+                        data_types.CompleteLocalName(device_config.name),
+                        data_types.Flags(
+                            AdvertisingData.Flags.LE_GENERAL_DISCOVERABLE_MODE
+                            | AdvertisingData.Flags.BR_EDR_NOT_SUPPORTED
                         ),
-                        (
-                            AdvertisingData.FLAGS,
-                            bytes(
-                                [
-                                    AdvertisingData.LE_GENERAL_DISCOVERABLE_MODE_FLAG
-                                    | AdvertisingData.BR_EDR_NOT_SUPPORTED_FLAG
-                                ]
-                            ),
-                        ),
-                        (
-                            AdvertisingData.INCOMPLETE_LIST_OF_16_BIT_SERVICE_CLASS_UUIDS,
-                            bytes(pacs.PublishedAudioCapabilitiesService.UUID),
+                        data_types.IncompleteListOf16BitServiceUUIDs(
+                            [pacs.PublishedAudioCapabilitiesService.UUID]
                         ),
                     ]
                 )

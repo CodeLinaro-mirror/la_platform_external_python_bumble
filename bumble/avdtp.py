@@ -16,45 +16,35 @@
 # Imports
 # -----------------------------------------------------------------------------
 from __future__ import annotations
+
 import asyncio
-import time
-import logging
 import enum
+import logging
+import time
 import warnings
+from collections.abc import AsyncGenerator, Awaitable, Iterable
+from dataclasses import dataclass, field
 from typing import (
     Any,
-    Awaitable,
-    Optional,
     Callable,
-    AsyncGenerator,
-    Iterable,
-    Union,
+    ClassVar,
+    Optional,
     SupportsBytes,
+    TypeVar,
+    Union,
     cast,
 )
 
+from typing_extensions import override
 
+from bumble import a2dp, device, hci, l2cap, sdp, utils
+from bumble.colors import color
 from bumble.core import (
     BT_ADVANCED_AUDIO_DISTRIBUTION_SERVICE,
     InvalidStateError,
     ProtocolError,
-    InvalidArgumentError,
-    name_or_number,
-)
-from bumble.a2dp import (
-    A2DP_CODEC_TYPE_NAMES,
-    A2DP_MPEG_2_4_AAC_CODEC_TYPE,
-    A2DP_NON_A2DP_CODEC_TYPE,
-    A2DP_SBC_CODEC_TYPE,
-    A2DP_VENDOR_MEDIA_CODEC_INFORMATION_CLASSES,
-    AacMediaCodecInformation,
-    SbcMediaCodecInformation,
-    VendorSpecificMediaCodecInformation,
 )
 from bumble.rtp import MediaPacket
-from bumble import sdp, device, l2cap, utils
-from bumble.colors import color
-
 
 # -----------------------------------------------------------------------------
 # Logging
@@ -73,147 +63,118 @@ AVDTP_PSM = 0x0019
 AVDTP_DEFAULT_RTX_SIG_TIMER = 5  # Seconds
 
 # Signal Identifiers (AVDTP spec - 8.5 Signal Command Set)
-AVDTP_DISCOVER             = 0x01
-AVDTP_GET_CAPABILITIES     = 0x02
-AVDTP_SET_CONFIGURATION    = 0x03
-AVDTP_GET_CONFIGURATION    = 0x04
-AVDTP_RECONFIGURE          = 0x05
-AVDTP_OPEN                 = 0x06
-AVDTP_START                = 0x07
-AVDTP_CLOSE                = 0x08
-AVDTP_SUSPEND              = 0x09
-AVDTP_ABORT                = 0x0A
-AVDTP_SECURITY_CONTROL     = 0x0B
-AVDTP_GET_ALL_CAPABILITIES = 0x0C
-AVDTP_DELAYREPORT          = 0x0D
+class SignalIdentifier(hci.SpecableEnum):
+    DISCOVER             = 0x01
+    GET_CAPABILITIES     = 0x02
+    SET_CONFIGURATION    = 0x03
+    GET_CONFIGURATION    = 0x04
+    RECONFIGURE          = 0x05
+    OPEN                 = 0x06
+    START                = 0x07
+    CLOSE                = 0x08
+    SUSPEND              = 0x09
+    ABORT                = 0x0A
+    SECURITY_CONTROL     = 0x0B
+    GET_ALL_CAPABILITIES = 0x0C
+    DELAYREPORT          = 0x0D
 
-AVDTP_SIGNAL_NAMES = {
-    AVDTP_DISCOVER:             'AVDTP_DISCOVER',
-    AVDTP_GET_CAPABILITIES:     'AVDTP_GET_CAPABILITIES',
-    AVDTP_SET_CONFIGURATION:    'AVDTP_SET_CONFIGURATION',
-    AVDTP_GET_CONFIGURATION:    'AVDTP_GET_CONFIGURATION',
-    AVDTP_RECONFIGURE:          'AVDTP_RECONFIGURE',
-    AVDTP_OPEN:                 'AVDTP_OPEN',
-    AVDTP_START:                'AVDTP_START',
-    AVDTP_CLOSE:                'AVDTP_CLOSE',
-    AVDTP_SUSPEND:              'AVDTP_SUSPEND',
-    AVDTP_ABORT:                'AVDTP_ABORT',
-    AVDTP_SECURITY_CONTROL:     'AVDTP_SECURITY_CONTROL',
-    AVDTP_GET_ALL_CAPABILITIES: 'AVDTP_GET_ALL_CAPABILITIES',
-    AVDTP_DELAYREPORT:          'AVDTP_DELAYREPORT'
-}
+AVDTP_DISCOVER             = SignalIdentifier.DISCOVER
+AVDTP_GET_CAPABILITIES     = SignalIdentifier.GET_CAPABILITIES
+AVDTP_SET_CONFIGURATION    = SignalIdentifier.SET_CONFIGURATION
+AVDTP_GET_CONFIGURATION    = SignalIdentifier.GET_CONFIGURATION
+AVDTP_RECONFIGURE          = SignalIdentifier.RECONFIGURE
+AVDTP_OPEN                 = SignalIdentifier.OPEN
+AVDTP_START                = SignalIdentifier.START
+AVDTP_CLOSE                = SignalIdentifier.CLOSE
+AVDTP_SUSPEND              = SignalIdentifier.SUSPEND
+AVDTP_ABORT                = SignalIdentifier.ABORT
+AVDTP_SECURITY_CONTROL     = SignalIdentifier.SECURITY_CONTROL
+AVDTP_GET_ALL_CAPABILITIES = SignalIdentifier.GET_ALL_CAPABILITIES
+AVDTP_DELAYREPORT          = SignalIdentifier.DELAYREPORT
 
-AVDTP_SIGNAL_IDENTIFIERS = {
-    'AVDTP_DISCOVER':             AVDTP_DISCOVER,
-    'AVDTP_GET_CAPABILITIES':     AVDTP_GET_CAPABILITIES,
-    'AVDTP_SET_CONFIGURATION':    AVDTP_SET_CONFIGURATION,
-    'AVDTP_GET_CONFIGURATION':    AVDTP_GET_CONFIGURATION,
-    'AVDTP_RECONFIGURE':          AVDTP_RECONFIGURE,
-    'AVDTP_OPEN':                 AVDTP_OPEN,
-    'AVDTP_START':                AVDTP_START,
-    'AVDTP_CLOSE':                AVDTP_CLOSE,
-    'AVDTP_SUSPEND':              AVDTP_SUSPEND,
-    'AVDTP_ABORT':                AVDTP_ABORT,
-    'AVDTP_SECURITY_CONTROL':     AVDTP_SECURITY_CONTROL,
-    'AVDTP_GET_ALL_CAPABILITIES': AVDTP_GET_ALL_CAPABILITIES,
-    'AVDTP_DELAYREPORT':          AVDTP_DELAYREPORT
-}
+class ErrorCode(hci.SpecableEnum):
+    '''Error codes (AVDTP spec - 8.20.6.2 ERROR_CODE tables)'''
+    BAD_HEADER_FORMAT          = 0x01
+    BAD_LENGTH                 = 0x11
+    BAD_ACP_SEID               = 0x12
+    SEP_IN_USE                 = 0x13
+    SEP_NOT_IN_USE             = 0x14
+    BAD_SERV_CATEGORY          = 0x17
+    BAD_PAYLOAD_FORMAT         = 0x18
+    NOT_SUPPORTED_COMMAND      = 0x19
+    INVALID_CAPABILITIES       = 0x1A
+    BAD_RECOVERY_TYPE          = 0x22
+    BAD_MEDIA_TRANSPORT_FORMAT = 0x23
+    BAD_RECOVERY_FORMAT        = 0x25
+    BAD_ROHC_FORMAT            = 0x26
+    BAD_CP_FORMAT              = 0x27
+    BAD_MULTIPLEXING_FORMAT    = 0x28
+    UNSUPPORTED_CONFIGURATION  = 0x29
+    BAD_STATE                  = 0x31
 
-# Error codes (AVDTP spec - 8.20.6.2 ERROR_CODE tables)
-AVDTP_BAD_HEADER_FORMAT_ERROR          = 0x01
-AVDTP_BAD_LENGTH_ERROR                 = 0x11
-AVDTP_BAD_ACP_SEID_ERROR               = 0x12
-AVDTP_SEP_IN_USE_ERROR                 = 0x13
-AVDTP_SEP_NOT_IN_USE_ERROR             = 0x14
-AVDTP_BAD_SERV_CATEGORY_ERROR          = 0x17
-AVDTP_BAD_PAYLOAD_FORMAT_ERROR         = 0x18
-AVDTP_NOT_SUPPORTED_COMMAND_ERROR      = 0x19
-AVDTP_INVALID_CAPABILITIES_ERROR       = 0x1A
-AVDTP_BAD_RECOVERY_TYPE_ERROR          = 0x22
-AVDTP_BAD_MEDIA_TRANSPORT_FORMAT_ERROR = 0x23
-AVDTP_BAD_RECOVERY_FORMAT_ERROR        = 0x25
-AVDTP_BAD_ROHC_FORMAT_ERROR            = 0x26
-AVDTP_BAD_CP_FORMAT_ERROR              = 0x27
-AVDTP_BAD_MULTIPLEXING_FORMAT_ERROR    = 0x28
-AVDTP_UNSUPPORTED_CONFIGURATION_ERROR  = 0x29
-AVDTP_BAD_STATE_ERROR                  = 0x31
+AVDTP_BAD_HEADER_FORMAT_ERROR          = ErrorCode.BAD_HEADER_FORMAT
+AVDTP_BAD_LENGTH_ERROR                 = ErrorCode.BAD_LENGTH
+AVDTP_BAD_ACP_SEID_ERROR               = ErrorCode.BAD_ACP_SEID
+AVDTP_SEP_IN_USE_ERROR                 = ErrorCode.SEP_IN_USE
+AVDTP_SEP_NOT_IN_USE_ERROR             = ErrorCode.SEP_NOT_IN_USE
+AVDTP_BAD_SERV_CATEGORY_ERROR          = ErrorCode.BAD_SERV_CATEGORY
+AVDTP_BAD_PAYLOAD_FORMAT_ERROR         = ErrorCode.BAD_PAYLOAD_FORMAT
+AVDTP_NOT_SUPPORTED_COMMAND_ERROR      = ErrorCode.NOT_SUPPORTED_COMMAND
+AVDTP_INVALID_CAPABILITIES_ERROR       = ErrorCode.INVALID_CAPABILITIES
+AVDTP_BAD_RECOVERY_TYPE_ERROR          = ErrorCode.BAD_RECOVERY_TYPE
+AVDTP_BAD_MEDIA_TRANSPORT_FORMAT_ERROR = ErrorCode.BAD_MEDIA_TRANSPORT_FORMAT
+AVDTP_BAD_RECOVERY_FORMAT_ERROR        = ErrorCode.BAD_RECOVERY_FORMAT
+AVDTP_BAD_ROHC_FORMAT_ERROR            = ErrorCode.BAD_ROHC_FORMAT
+AVDTP_BAD_CP_FORMAT_ERROR              = ErrorCode.BAD_CP_FORMAT
+AVDTP_BAD_MULTIPLEXING_FORMAT_ERROR    = ErrorCode.BAD_MULTIPLEXING_FORMAT
+AVDTP_UNSUPPORTED_CONFIGURATION_ERROR  = ErrorCode.UNSUPPORTED_CONFIGURATION
+AVDTP_BAD_STATE_ERROR                  = ErrorCode.BAD_STATE
 
-AVDTP_ERROR_NAMES = {
-    AVDTP_BAD_HEADER_FORMAT_ERROR:          'AVDTP_BAD_HEADER_FORMAT_ERROR',
-    AVDTP_BAD_LENGTH_ERROR:                 'AVDTP_BAD_LENGTH_ERROR',
-    AVDTP_BAD_ACP_SEID_ERROR:               'AVDTP_BAD_ACP_SEID_ERROR',
-    AVDTP_SEP_IN_USE_ERROR:                 'AVDTP_SEP_IN_USE_ERROR',
-    AVDTP_SEP_NOT_IN_USE_ERROR:             'AVDTP_SEP_NOT_IN_USE_ERROR',
-    AVDTP_BAD_SERV_CATEGORY_ERROR:          'AVDTP_BAD_SERV_CATEGORY_ERROR',
-    AVDTP_BAD_PAYLOAD_FORMAT_ERROR:         'AVDTP_BAD_PAYLOAD_FORMAT_ERROR',
-    AVDTP_NOT_SUPPORTED_COMMAND_ERROR:      'AVDTP_NOT_SUPPORTED_COMMAND_ERROR',
-    AVDTP_INVALID_CAPABILITIES_ERROR:       'AVDTP_INVALID_CAPABILITIES_ERROR',
-    AVDTP_BAD_RECOVERY_TYPE_ERROR:          'AVDTP_BAD_RECOVERY_TYPE_ERROR',
-    AVDTP_BAD_MEDIA_TRANSPORT_FORMAT_ERROR: 'AVDTP_BAD_MEDIA_TRANSPORT_FORMAT_ERROR',
-    AVDTP_BAD_RECOVERY_FORMAT_ERROR:        'AVDTP_BAD_RECOVERY_FORMAT_ERROR',
-    AVDTP_BAD_ROHC_FORMAT_ERROR:            'AVDTP_BAD_ROHC_FORMAT_ERROR',
-    AVDTP_BAD_CP_FORMAT_ERROR:              'AVDTP_BAD_CP_FORMAT_ERROR',
-    AVDTP_BAD_MULTIPLEXING_FORMAT_ERROR:    'AVDTP_BAD_MULTIPLEXING_FORMAT_ERROR',
-    AVDTP_UNSUPPORTED_CONFIGURATION_ERROR:  'AVDTP_UNSUPPORTED_CONFIGURATION_ERROR',
-    AVDTP_BAD_STATE_ERROR:                  'AVDTP_BAD_STATE_ERROR'
-}
+class MediaType(utils.OpenIntEnum):
+    AUDIO      = 0x00
+    VIDEO      = 0x01
+    MULTIMEDIA = 0x02
 
-AVDTP_AUDIO_MEDIA_TYPE      = 0x00
-AVDTP_VIDEO_MEDIA_TYPE      = 0x01
-AVDTP_MULTIMEDIA_MEDIA_TYPE = 0x02
+AVDTP_AUDIO_MEDIA_TYPE      = MediaType.AUDIO
+AVDTP_VIDEO_MEDIA_TYPE      = MediaType.VIDEO
+AVDTP_MULTIMEDIA_MEDIA_TYPE = MediaType.MULTIMEDIA
 
-AVDTP_MEDIA_TYPE_NAMES = {
-    AVDTP_AUDIO_MEDIA_TYPE:      'AVDTP_AUDIO_MEDIA_TYPE',
-    AVDTP_VIDEO_MEDIA_TYPE:      'AVDTP_VIDEO_MEDIA_TYPE',
-    AVDTP_MULTIMEDIA_MEDIA_TYPE: 'AVDTP_MULTIMEDIA_MEDIA_TYPE'
-}
+class StreamEndPointType(utils.OpenIntEnum):
+    '''TSEP (AVDTP spec - 8.20.3 Stream End-point Type, Source or Sink (TSEP)).'''
+    SRC = 0x00
+    SNK = 0x01
 
-# TSEP (AVDTP spec - 8.20.3 Stream End-point Type, Source or Sink (TSEP))
-AVDTP_TSEP_SRC = 0x00
-AVDTP_TSEP_SNK = 0x01
+AVDTP_TSEP_SRC = StreamEndPointType.SRC
+AVDTP_TSEP_SNK = StreamEndPointType.SNK
 
-AVDTP_TSEP_NAMES = {
-    AVDTP_TSEP_SRC: 'AVDTP_TSEP_SRC',
-    AVDTP_TSEP_SNK: 'AVDTP_TSEP_SNK'
-}
+class ServiceCategory(hci.SpecableEnum):
+    '''Service Categories (AVDTP spec - Table 8.47: Service Category information element field values).'''
+    MEDIA_TRANSPORT    = 0x01
+    REPORTING          = 0x02
+    RECOVERY           = 0x03
+    CONTENT_PROTECTION = 0x04
+    HEADER_COMPRESSION = 0x05
+    MULTIPLEXING       = 0x06
+    MEDIA_CODEC        = 0x07
+    DELAY_REPORTING    = 0x08
 
-# Service Categories (AVDTP spec - Table 8.47: Service Category information element field values)
-AVDTP_MEDIA_TRANSPORT_SERVICE_CATEGORY    = 0x01
-AVDTP_REPORTING_SERVICE_CATEGORY          = 0x02
-AVDTP_RECOVERY_SERVICE_CATEGORY           = 0x03
-AVDTP_CONTENT_PROTECTION_SERVICE_CATEGORY = 0x04
-AVDTP_HEADER_COMPRESSION_SERVICE_CATEGORY = 0x05
-AVDTP_MULTIPLEXING_SERVICE_CATEGORY       = 0x06
-AVDTP_MEDIA_CODEC_SERVICE_CATEGORY        = 0x07
-AVDTP_DELAY_REPORTING_SERVICE_CATEGORY    = 0x08
+AVDTP_MEDIA_TRANSPORT_SERVICE_CATEGORY    = ServiceCategory.MEDIA_TRANSPORT
+AVDTP_REPORTING_SERVICE_CATEGORY          = ServiceCategory.REPORTING
+AVDTP_RECOVERY_SERVICE_CATEGORY           = ServiceCategory.RECOVERY
+AVDTP_CONTENT_PROTECTION_SERVICE_CATEGORY = ServiceCategory.CONTENT_PROTECTION
+AVDTP_HEADER_COMPRESSION_SERVICE_CATEGORY = ServiceCategory.HEADER_COMPRESSION
+AVDTP_MULTIPLEXING_SERVICE_CATEGORY       = ServiceCategory.MULTIPLEXING
+AVDTP_MEDIA_CODEC_SERVICE_CATEGORY        = ServiceCategory.MEDIA_CODEC
+AVDTP_DELAY_REPORTING_SERVICE_CATEGORY    = ServiceCategory.DELAY_REPORTING
 
-AVDTP_SERVICE_CATEGORY_NAMES = {
-    AVDTP_MEDIA_TRANSPORT_SERVICE_CATEGORY:    'AVDTP_MEDIA_TRANSPORT_SERVICE_CATEGORY',
-    AVDTP_REPORTING_SERVICE_CATEGORY:          'AVDTP_REPORTING_SERVICE_CATEGORY',
-    AVDTP_RECOVERY_SERVICE_CATEGORY:           'AVDTP_RECOVERY_SERVICE_CATEGORY',
-    AVDTP_CONTENT_PROTECTION_SERVICE_CATEGORY: 'AVDTP_CONTENT_PROTECTION_SERVICE_CATEGORY',
-    AVDTP_HEADER_COMPRESSION_SERVICE_CATEGORY: 'AVDTP_HEADER_COMPRESSION_SERVICE_CATEGORY',
-    AVDTP_MULTIPLEXING_SERVICE_CATEGORY:       'AVDTP_MULTIPLEXING_SERVICE_CATEGORY',
-    AVDTP_MEDIA_CODEC_SERVICE_CATEGORY:        'AVDTP_MEDIA_CODEC_SERVICE_CATEGORY',
-    AVDTP_DELAY_REPORTING_SERVICE_CATEGORY:    'AVDTP_DELAY_REPORTING_SERVICE_CATEGORY'
-}
-
-# States (AVDTP spec - 9.1 State Definitions)
-AVDTP_IDLE_STATE       = 0x00
-AVDTP_CONFIGURED_STATE = 0x01
-AVDTP_OPEN_STATE       = 0x02
-AVDTP_STREAMING_STATE  = 0x03
-AVDTP_CLOSING_STATE    = 0x04
-AVDTP_ABORTING_STATE   = 0x05
-
-AVDTP_STATE_NAMES = {
-    AVDTP_IDLE_STATE:       'AVDTP_IDLE_STATE',
-    AVDTP_CONFIGURED_STATE: 'AVDTP_CONFIGURED_STATE',
-    AVDTP_OPEN_STATE:       'AVDTP_OPEN_STATE',
-    AVDTP_STREAMING_STATE:  'AVDTP_STREAMING_STATE',
-    AVDTP_CLOSING_STATE:    'AVDTP_CLOSING_STATE',
-    AVDTP_ABORTING_STATE:   'AVDTP_ABORTING_STATE'
-}
+class State(utils.OpenIntEnum):
+    '''States (AVDTP spec - 9.1 State Definitions)'''
+    IDLE       = 0x00
+    CONFIGURED = 0x01
+    OPEN       = 0x02
+    STREAMING  = 0x03
+    CLOSING    = 0x04
+    ABORTING   = 0x05
 
 # fmt: on
 # pylint: enable=line-too-long
@@ -336,6 +297,7 @@ class MediaPacketPump:
 # -----------------------------------------------------------------------------
 class MessageAssembler:
     message: Optional[bytes]
+    signal_identifier: SignalIdentifier
 
     def __init__(self, callback: Callable[[int, Message], Any]) -> None:
         self.callback = callback
@@ -345,7 +307,7 @@ class MessageAssembler:
         self.transaction_label = 0
         self.message = None
         self.message_type = Message.MessageType.COMMAND
-        self.signal_identifier = 0
+        self.signal_identifier = SignalIdentifier(0)
         self.number_of_signal_packets = 0
         self.packet_count = 0
 
@@ -374,7 +336,7 @@ class MessageAssembler:
                 self.reset()
 
             self.transaction_label = transaction_label
-            self.signal_identifier = pdu[1] & 0x3F
+            self.signal_identifier = SignalIdentifier(pdu[1] & 0x3F)
             self.message_type = message_type
 
             if packet_type == Protocol.PacketType.SINGLE_PACKET:
@@ -430,161 +392,139 @@ class MessageAssembler:
 
     def on_message_complete(self) -> None:
         message = Message.create(
-            self.signal_identifier, self.message_type, self.message or b''
+            self.signal_identifier,
+            self.message_type,
+            self.message or b'',
         )
         try:
             self.callback(self.transaction_label, message)
-        except Exception as error:
-            logger.exception(color(f'!!! exception in callback: {error}', 'red'))
+        except Exception:
+            logger.exception(color('!!! exception in callback', 'red'))
 
         self.reset()
 
 
 # -----------------------------------------------------------------------------
+@dataclass
 class ServiceCapabilities:
-    @staticmethod
+    METADATA = hci.metadata(
+        {
+            'parser': lambda data, offset: (
+                len(data),
+                ServiceCapabilities.parse_capabilities(data[offset:]),
+            ),
+            'serializer': lambda capabilities: ServiceCapabilities.serialize_capabilities(
+                capabilities
+            ),
+        }
+    )
+    service_category: int
+    service_capabilities_bytes: bytes = b''
+
+    @classmethod
     def create(
-        service_category: int, service_capabilities_bytes: bytes
+        cls, service_category: int, service_capabilities_bytes: bytes
     ) -> ServiceCapabilities:
         # Select the appropriate subclass
-        cls: type[ServiceCapabilities]
         if service_category == AVDTP_MEDIA_CODEC_SERVICE_CATEGORY:
-            cls = MediaCodecCapabilities
-        else:
-            cls = ServiceCapabilities
+            return MediaCodecCapabilities.from_bytes(service_capabilities_bytes)
+        return ServiceCapabilities(
+            service_category=service_category,
+            service_capabilities_bytes=service_capabilities_bytes,
+        )
 
-        # Create an instance and initialize it
-        instance = cls.__new__(cls)
-        instance.service_category = service_category
-        instance.service_capabilities_bytes = service_capabilities_bytes
-        instance.init_from_bytes()
-
-        return instance
-
-    @staticmethod
-    def parse_capabilities(payload: bytes) -> list[ServiceCapabilities]:
+    @classmethod
+    def parse_capabilities(cls, payload: bytes) -> list[ServiceCapabilities]:
         capabilities = []
-        while payload:
-            service_category = payload[0]
-            length_of_service_capabilities = payload[1]
-            service_capabilities_bytes = payload[2 : 2 + length_of_service_capabilities]
+        offset = 0
+        while offset < len(payload):
+            service_category = payload[offset]
+            length_of_service_capabilities = payload[offset + 1]
+            service_capabilities_bytes = payload[
+                offset + 2 : offset + 2 + length_of_service_capabilities
+            ]
             capabilities.append(
                 ServiceCapabilities.create(service_category, service_capabilities_bytes)
             )
-
-            payload = payload[2 + length_of_service_capabilities :]
+            offset += 2 + length_of_service_capabilities
 
         return capabilities
 
-    @staticmethod
-    def serialize_capabilities(capabilities: Iterable[ServiceCapabilities]) -> bytes:
-        serialized = b''
-        for item in capabilities:
-            serialized += (
-                bytes([item.service_category, len(item.service_capabilities_bytes)])
-                + item.service_capabilities_bytes
-            )
-        return serialized
-
-    def init_from_bytes(self) -> None:
-        pass
-
-    def __init__(
-        self, service_category: int, service_capabilities_bytes: bytes = b''
-    ) -> None:
-        self.service_category = service_category
-        self.service_capabilities_bytes = service_capabilities_bytes
-
-    def to_string(self, details: Optional[list[str]] = None) -> str:
-        attributes = ','.join(
-            [name_or_number(AVDTP_SERVICE_CATEGORY_NAMES, self.service_category)]
-            + (details or [])
+    @classmethod
+    def serialize_capabilities(
+        cls, capabilities: Iterable[ServiceCapabilities]
+    ) -> bytes:
+        return b''.join(
+            bytes([item.service_category, len(item.service_capabilities_bytes)])
+            + item.service_capabilities_bytes
+            for item in capabilities
         )
-        return f'ServiceCapabilities({attributes})'
-
-    def __str__(self) -> str:
-        if self.service_capabilities_bytes:
-            details = [self.service_capabilities_bytes.hex()]
-        else:
-            details = []
-        return self.to_string(details)
 
 
 # -----------------------------------------------------------------------------
+@dataclass(init=False)
 class MediaCodecCapabilities(ServiceCapabilities):
+    service_category = AVDTP_MEDIA_CODEC_SERVICE_CATEGORY
+    # Redeclare this attribute to suppress inheritance error.
+    service_capabilities_bytes: bytes
+
+    media_type: MediaType
+    media_codec_type: a2dp.CodecType
     media_codec_information: Union[bytes, SupportsBytes]
-    media_type: int
-    media_codec_type: int
 
-    def init_from_bytes(self) -> None:
-        self.media_type = self.service_capabilities_bytes[0]
-        self.media_codec_type = self.service_capabilities_bytes[1]
-        self.media_codec_information = self.service_capabilities_bytes[2:]
-
-        if self.media_codec_type == A2DP_SBC_CODEC_TYPE:
-            self.media_codec_information = SbcMediaCodecInformation.from_bytes(
-                self.media_codec_information
-            )
-        elif self.media_codec_type == A2DP_MPEG_2_4_AAC_CODEC_TYPE:
-            self.media_codec_information = AacMediaCodecInformation.from_bytes(
-                self.media_codec_information
-            )
-        elif self.media_codec_type == A2DP_NON_A2DP_CODEC_TYPE:
-            vendor_media_codec_information = (
-                VendorSpecificMediaCodecInformation.from_bytes(
-                    self.media_codec_information
-                )
-            )
-            if (
-                vendor_class_map := A2DP_VENDOR_MEDIA_CODEC_INFORMATION_CLASSES.get(
-                    vendor_media_codec_information.vendor_id
-                )
-            ) and (
-                media_codec_information_class := vendor_class_map.get(
-                    vendor_media_codec_information.codec_id
-                )
-            ):
-                self.media_codec_information = media_codec_information_class.from_bytes(
-                    vendor_media_codec_information.value
-                )
-            else:
-                self.media_codec_information = vendor_media_codec_information
-
+    # Override init to allow passing service_capabilities_bytes.
     def __init__(
         self,
-        media_type: int,
-        media_codec_type: int,
+        media_type: MediaType,
+        media_codec_type: a2dp.CodecType,
         media_codec_information: Union[bytes, SupportsBytes],
+        service_capabilities_bytes: Optional[bytes] = None,
     ) -> None:
-        super().__init__(
-            AVDTP_MEDIA_CODEC_SERVICE_CATEGORY,
-            bytes([media_type, media_codec_type]) + bytes(media_codec_information),
-        )
         self.media_type = media_type
         self.media_codec_type = media_codec_type
-        self.media_codec_information = media_codec_information
 
-    def __str__(self) -> str:
-        codec_info = (
-            self.media_codec_information.hex()
-            if isinstance(self.media_codec_information, bytes)
-            else str(self.media_codec_information)
+        if isinstance(media_codec_information, bytes):
+            self.media_codec_information = a2dp.MediaCodecInformation.create(
+                media_codec_type, media_codec_information
+            )
+        else:
+            self.media_codec_information = media_codec_information
+
+        if service_capabilities_bytes is not None:
+            self.service_capabilities_bytes = service_capabilities_bytes
+        else:
+            self.service_capabilities_bytes = bytes(
+                [self.media_type, self.media_codec_type]
+            ) + bytes(self.media_codec_information)
+
+    @classmethod
+    def from_bytes(cls, data: bytes) -> ServiceCapabilities:
+        media_type = MediaType(data[0])
+        media_codec_type = a2dp.CodecType(data[1])
+        return cls(
+            media_type=media_type,
+            media_codec_type=media_codec_type,
+            media_codec_information=a2dp.MediaCodecInformation.create(
+                media_codec_type, data[2:]
+            ),
         )
-
-        details = [
-            f'media_type={name_or_number(AVDTP_MEDIA_TYPE_NAMES, self.media_type)}',
-            f'codec={name_or_number(A2DP_CODEC_TYPE_NAMES, self.media_codec_type)}',
-            f'codec_info={codec_info}',
-        ]
-        return self.to_string(details)
 
 
 # -----------------------------------------------------------------------------
+@dataclass
 class EndPointInfo:
-    @staticmethod
-    def from_bytes(payload: bytes) -> EndPointInfo:
-        return EndPointInfo(
-            payload[0] >> 2, payload[0] >> 1 & 1, payload[1] >> 4, payload[1] >> 3 & 1
+    seid: int
+    in_use: int
+    media_type: MediaType
+    tsep: StreamEndPointType
+
+    @classmethod
+    def from_bytes(cls, payload: bytes) -> EndPointInfo:
+        return cls(
+            seid=payload[0] >> 2,
+            in_use=payload[0] >> 1 & 1,
+            media_type=MediaType(payload[1] >> 4),
+            tsep=StreamEndPointType(payload[1] >> 3 & 1),
         )
 
     def __bytes__(self) -> bytes:
@@ -592,98 +532,84 @@ class EndPointInfo:
             [self.seid << 2 | self.in_use << 1, self.media_type << 4 | self.tsep << 3]
         )
 
-    def __init__(self, seid: int, in_use: int, media_type: int, tsep: int) -> None:
-        self.seid = seid
-        self.in_use = in_use
-        self.media_type = media_type
-        self.tsep = tsep
-
 
 # -----------------------------------------------------------------------------
-class Message:  # pylint:disable=attribute-defined-outside-init
+class Message:
     class MessageType(enum.IntEnum):
         COMMAND = 0
         GENERAL_REJECT = 1
         RESPONSE_ACCEPT = 2
         RESPONSE_REJECT = 3
 
+    SEID_METADATA = hci.metadata(
+        {
+            'serializer': lambda seid: bytes([seid << 2]),
+            'parser': lambda data, offset: (offset + 1, data[offset] >> 2),
+        }
+    )
+
     # Subclasses, by signal identifier and message type
-    subclasses: dict[int, dict[int, type[Message]]] = {}
+    subclasses: ClassVar[dict[int, dict[int, type[Message]]]] = {}
+
     message_type: MessageType
-    signal_identifier: int
+    signal_identifier: SignalIdentifier
+    _payload: Optional[bytes] = None
+    fields: ClassVar[hci.Fields] = ()
 
-    @staticmethod
-    def subclass(subclass):
-        # Infer the signal identifier and message subtype from the class name
-        name = subclass.__name__
-        if name == 'General_Reject':
-            subclass.signal_identifier = 0
-            signal_identifier_str = None
-            message_type = Message.MessageType.COMMAND
-        elif name.endswith('_Command'):
-            signal_identifier_str = name[:-8]
-            message_type = Message.MessageType.COMMAND
-        elif name.endswith('_Response'):
-            signal_identifier_str = name[:-9]
-            message_type = Message.MessageType.RESPONSE_ACCEPT
-        elif name.endswith('_Reject'):
-            signal_identifier_str = name[:-7]
-            message_type = Message.MessageType.RESPONSE_REJECT
-        else:
-            raise InvalidArgumentError('invalid class name')
+    @property
+    def payload(self) -> bytes:
+        if self._payload is None:
+            self._payload = hci.HCI_Object.dict_to_bytes(self.__dict__, self.fields)
+        return self._payload
 
-        subclass.message_type = message_type
+    @payload.setter
+    def payload(self, payload: bytes) -> None:
+        self._payload = payload
 
-        if signal_identifier_str is not None:
-            for name, signal_identifier in AVDTP_SIGNAL_IDENTIFIERS.items():
-                if name.lower().endswith(signal_identifier_str.lower()):
-                    subclass.signal_identifier = signal_identifier
-                    break
+    _Message = TypeVar("_Message", bound="Message")
 
-            # Register the subclass
-            Message.subclasses.setdefault(subclass.signal_identifier, {})[
-                subclass.message_type
-            ] = subclass
-
+    @classmethod
+    def subclass(cls, subclass: type[_Message]) -> type[_Message]:
+        cls.subclasses.setdefault(subclass.signal_identifier, {})[
+            subclass.message_type
+        ] = subclass
+        subclass.fields = hci.HCI_Object.fields_from_dataclass(subclass)
         return subclass
 
     # Factory method to create a subclass based on the signal identifier and message
     # type
-    @staticmethod
+    @classmethod
     def create(
-        signal_identifier: int, message_type: MessageType, payload: bytes
+        cls,
+        signal_identifier: SignalIdentifier,
+        message_type: MessageType,
+        payload: bytes,
     ) -> Message:
+        instance: Message
         # Look for a registered subclass
-        subclasses = Message.subclasses.get(signal_identifier)
-        if subclasses:
-            subclass = subclasses.get(message_type)
-            if subclass:
-                instance = subclass.__new__(subclass)
-                instance.payload = payload
-                instance.init_from_payload()
-                return instance
+        if (subclasses := Message.subclasses.get(signal_identifier)) and (
+            subclass := subclasses.get(message_type)
+        ):
+            instance = subclass(
+                **hci.HCI_Object.dict_from_bytes(payload, 0, subclass.fields),
+            )
+            instance.payload = payload
+            return instance
 
         # Instantiate the appropriate class based on the message type
         if message_type == Message.MessageType.RESPONSE_REJECT:
             # Assume a simple reject message
-            instance = Simple_Reject(payload)
-            instance.init_from_payload()
+            instance = Simple_Reject(ErrorCode(payload[0]))
         else:
-            instance = Message(payload)
+            instance = Message()
+            instance.payload = payload
+            instance.message_type = message_type
         instance.signal_identifier = signal_identifier
-        instance.message_type = message_type
         return instance
-
-    def init_from_payload(self) -> None:
-        pass
-
-    def __init__(self, payload: bytes = b'') -> None:
-        self.payload = payload
 
     def to_string(self, details: Union[str, Iterable[str]]) -> str:
         base = color(
-            f'{name_or_number(AVDTP_SIGNAL_NAMES, self.signal_identifier)}_'
-            f'{self.message_type.name}',
+            f'{self.signal_identifier.name}_{self.message_type.name}',
             'yellow',
         )
 
@@ -704,68 +630,84 @@ class Message:  # pylint:disable=attribute-defined-outside-init
 
 
 # -----------------------------------------------------------------------------
+@dataclass
 class Simple_Command(Message):
     '''
     Command message with just one seid
     '''
 
-    def init_from_payload(self):
-        self.acp_seid = self.payload[0] >> 2
+    message_type = Message.MessageType.COMMAND
 
-    def __init__(self, seid):
-        super().__init__(payload=bytes([seid << 2]))
-        self.acp_seid = seid
+    acp_seid: int = field(metadata=Message.SEID_METADATA)
 
     def __str__(self) -> str:
         return self.to_string([f'ACP SEID: {self.acp_seid}'])
 
 
 # -----------------------------------------------------------------------------
+@dataclass
 class Simple_Reject(Message):
     '''
     Reject messages with just an error code
     '''
 
-    def init_from_payload(self):
-        self.error_code = self.payload[0]
+    message_type = Message.MessageType.RESPONSE_REJECT
 
-    def __init__(self, error_code):
-        super().__init__(payload=bytes([error_code]))
-        self.error_code = error_code
+    error_code: ErrorCode = field(metadata=ErrorCode.type_metadata(1))
 
     def __str__(self) -> str:
-        details = [f'error_code: {name_or_number(AVDTP_ERROR_NAMES, self.error_code)}']
+        details = [f'error_code: {self.error_code.name}']
         return self.to_string(details)
 
 
 # -----------------------------------------------------------------------------
 @Message.subclass
+@dataclass
 class Discover_Command(Message):
     '''
     See Bluetooth AVDTP spec - 8.6.1 Stream End Point Discovery Command
     '''
 
+    signal_identifier = AVDTP_DISCOVER
+    message_type = Message.MessageType.COMMAND
+
 
 # -----------------------------------------------------------------------------
 @Message.subclass
+@dataclass
 class Discover_Response(Message):
     '''
     See Bluetooth AVDTP spec - 8.6.2 Stream End Point Discovery Response
     '''
 
-    endpoints: list[EndPointInfo]
+    signal_identifier = AVDTP_DISCOVER
+    message_type = Message.MessageType.RESPONSE_ACCEPT
 
-    def init_from_payload(self):
-        self.endpoints = []
-        endpoint_count = len(self.payload) // 2
-        for i in range(endpoint_count):
-            self.endpoints.append(
-                EndPointInfo.from_bytes(self.payload[i * 2 : (i + 1) * 2])
-            )
+    @classmethod
+    def parse_endpoints(
+        cls, data: bytes, offset: int
+    ) -> tuple[int, list[EndPointInfo]]:
+        return len(data), [
+            EndPointInfo.from_bytes(data[i * 2 : (i + 1) * 2])
+            for i in range(offset, len(data) // 2)
+        ]
 
-    def __init__(self, endpoints):
-        super().__init__(payload=b''.join([bytes(endpoint) for endpoint in endpoints]))
-        self.endpoints = endpoints
+    @classmethod
+    def serialize_endpoints(cls, endpoints: Iterable[EndPointInfo]) -> bytes:
+        return b''.join([bytes(endpoint) for endpoint in endpoints])
+
+    endpoints: Iterable[EndPointInfo] = field(
+        metadata=hci.metadata(
+            {
+                'parser': lambda data, offset: Discover_Response.parse_endpoints(
+                    data, offset
+                ),
+                'serializer': lambda endpoints: Discover_Response.serialize_endpoints(
+                    endpoints
+                ),
+            }
+        )
+    )
 
     def __str__(self) -> str:
         details = []
@@ -775,8 +717,8 @@ class Discover_Response(Message):
                 [
                     f'ACP SEID: {endpoint.seid}',
                     f'  in_use:     {endpoint.in_use}',
-                    f'  media_type: {name_or_number(AVDTP_MEDIA_TYPE_NAMES, endpoint.media_type)}',
-                    f'  tsep:       {name_or_number(AVDTP_TSEP_NAMES, endpoint.tsep)}',
+                    f'  media_type: {endpoint.media_type.name}',
+                    f'  tsep:       {endpoint.tsep.name}',
                 ]
             )
         return self.to_string(details)
@@ -784,27 +726,30 @@ class Discover_Response(Message):
 
 # -----------------------------------------------------------------------------
 @Message.subclass
+@dataclass
 class Get_Capabilities_Command(Simple_Command):
     '''
     See Bluetooth AVDTP spec - 8.7.1 Get Capabilities Command
     '''
 
+    signal_identifier = AVDTP_GET_CAPABILITIES
+    message_type = Message.MessageType.COMMAND
+
 
 # -----------------------------------------------------------------------------
 @Message.subclass
+@dataclass
 class Get_Capabilities_Response(Message):
     '''
     See Bluetooth AVDTP spec - 8.7.2 Get All Capabilities Response
     '''
 
-    def init_from_payload(self):
-        self.capabilities = ServiceCapabilities.parse_capabilities(self.payload)
+    signal_identifier = AVDTP_GET_CAPABILITIES
+    message_type = Message.MessageType.RESPONSE_ACCEPT
 
-    def __init__(self, capabilities):
-        super().__init__(
-            payload=ServiceCapabilities.serialize_capabilities(capabilities)
-        )
-        self.capabilities = capabilities
+    capabilities: Iterable[ServiceCapabilities] = field(
+        metadata=ServiceCapabilities.METADATA
+    )
 
     def __str__(self) -> str:
         details = [str(capability) for capability in self.capabilities]
@@ -813,58 +758,68 @@ class Get_Capabilities_Response(Message):
 
 # -----------------------------------------------------------------------------
 @Message.subclass
+@dataclass
 class Get_Capabilities_Reject(Simple_Reject):
     '''
     See Bluetooth AVDTP spec - 8.7.3 Get Capabilities Reject
     '''
 
+    signal_identifier = AVDTP_GET_CAPABILITIES
+    message_type = Message.MessageType.RESPONSE_REJECT
+
 
 # -----------------------------------------------------------------------------
 @Message.subclass
+@dataclass
 class Get_All_Capabilities_Command(Get_Capabilities_Command):
     '''
     See Bluetooth AVDTP spec - 8.8.1 Get All Capabilities Command
     '''
 
+    signal_identifier = AVDTP_GET_ALL_CAPABILITIES
+    message_type = Message.MessageType.COMMAND
+
 
 # -----------------------------------------------------------------------------
 @Message.subclass
+@dataclass
 class Get_All_Capabilities_Response(Get_Capabilities_Response):
     '''
     See Bluetooth AVDTP spec - 8.8.2 Get All Capabilities Response
     '''
 
+    signal_identifier = AVDTP_GET_ALL_CAPABILITIES
+    message_type = Message.MessageType.RESPONSE_ACCEPT
+
 
 # -----------------------------------------------------------------------------
 @Message.subclass
+@dataclass
 class Get_All_Capabilities_Reject(Simple_Reject):
     '''
     See Bluetooth AVDTP spec - 8.8.3 Get All Capabilities Reject
     '''
 
+    signal_identifier = AVDTP_GET_ALL_CAPABILITIES
+    message_type = Message.MessageType.RESPONSE_REJECT
+
 
 # -----------------------------------------------------------------------------
 @Message.subclass
+@dataclass
 class Set_Configuration_Command(Message):
     '''
     See Bluetooth AVDTP spec - 8.9.1 Set Configuration Command
     '''
 
-    def init_from_payload(self):
-        self.acp_seid = self.payload[0] >> 2
-        self.int_seid = self.payload[1] >> 2
-        self.capabilities = ServiceCapabilities.parse_capabilities(self.payload[2:])
+    signal_identifier = AVDTP_SET_CONFIGURATION
+    message_type = Message.MessageType.COMMAND
 
-    def __init__(
-        self, acp_seid: int, int_seid: int, capabilities: Iterable[ServiceCapabilities]
-    ) -> None:
-        super().__init__(
-            payload=bytes([acp_seid << 2, int_seid << 2])
-            + ServiceCapabilities.serialize_capabilities(capabilities)
-        )
-        self.acp_seid = acp_seid
-        self.int_seid = int_seid
-        self.capabilities = capabilities
+    acp_seid: int = field(metadata=Message.SEID_METADATA)
+    int_seid: int = field(metadata=Message.SEID_METADATA)
+    capabilities: Iterable[ServiceCapabilities] = field(
+        metadata=ServiceCapabilities.METADATA
+    )
 
     def __str__(self) -> str:
         details = [f'ACP SEID: {self.acp_seid}', f'INT SEID: {self.int_seid}'] + [
@@ -875,65 +830,68 @@ class Set_Configuration_Command(Message):
 
 # -----------------------------------------------------------------------------
 @Message.subclass
+@dataclass
 class Set_Configuration_Response(Message):
     '''
     See Bluetooth AVDTP spec - 8.9.2 Set Configuration Response
     '''
 
+    signal_identifier = AVDTP_SET_CONFIGURATION
+    message_type = Message.MessageType.RESPONSE_ACCEPT
+
 
 # -----------------------------------------------------------------------------
 @Message.subclass
+@dataclass
 class Set_Configuration_Reject(Message):
     '''
     See Bluetooth AVDTP spec - 8.9.3 Set Configuration Reject
     '''
 
-    def init_from_payload(self):
-        self.service_category = self.payload[0]
-        self.error_code = self.payload[1]
+    signal_identifier = AVDTP_SET_CONFIGURATION
+    message_type = Message.MessageType.RESPONSE_REJECT
 
-    def __init__(self, error_code: int, service_category: int = 0) -> None:
-        super().__init__(payload=bytes([service_category, error_code]))
-        self.service_category = service_category
-        self.error_code = error_code
+    service_category: ServiceCategory = field(
+        metadata=ServiceCategory.type_metadata(1), default=ServiceCategory(0)
+    )
+    error_code: ErrorCode = field(
+        metadata=ErrorCode.type_metadata(1), default=ErrorCode(0)
+    )
 
     def __str__(self) -> str:
         details = [
-            (
-                'service_category: '
-                f'{name_or_number(AVDTP_SERVICE_CATEGORY_NAMES, self.service_category)}'
-            ),
-            (
-                'error_code:       '
-                f'{name_or_number(AVDTP_ERROR_NAMES, self.error_code)}'
-            ),
+            (f'service_category: {self.service_category.name}'),
+            (f'error_code:       {self.error_code.name}'),
         ]
         return self.to_string(details)
 
 
 # -----------------------------------------------------------------------------
 @Message.subclass
+@dataclass
 class Get_Configuration_Command(Simple_Command):
     '''
     See Bluetooth AVDTP spec - 8.10.1 Get Configuration Command
     '''
 
+    signal_identifier = AVDTP_GET_CONFIGURATION
+    message_type = Message.MessageType.COMMAND
+
 
 # -----------------------------------------------------------------------------
 @Message.subclass
+@dataclass
 class Get_Configuration_Response(Message):
     '''
     See Bluetooth AVDTP spec - 8.10.2 Get Configuration Response
     '''
 
-    def init_from_payload(self):
-        self.capabilities = ServiceCapabilities.parse_capabilities(self.payload)
+    signal_identifier = AVDTP_GET_CONFIGURATION
+    message_type = Message.MessageType.RESPONSE_ACCEPT
 
-    def __init__(self, capabilities: Iterable[ServiceCapabilities]) -> None:
-        super().__init__(
-            payload=ServiceCapabilities.serialize_capabilities(capabilities)
-        )
-        self.capabilities = capabilities
+    capabilities: Iterable[ServiceCapabilities] = field(
+        metadata=ServiceCapabilities.METADATA
+    )
 
     def __str__(self) -> str:
         details = [str(capability) for capability in self.capabilities]
@@ -942,23 +900,31 @@ class Get_Configuration_Response(Message):
 
 # -----------------------------------------------------------------------------
 @Message.subclass
+@dataclass
 class Get_Configuration_Reject(Simple_Reject):
     '''
     See Bluetooth AVDTP spec - 8.10.3 Get Configuration Reject
     '''
 
+    signal_identifier = AVDTP_GET_CONFIGURATION
+    message_type = Message.MessageType.RESPONSE_REJECT
+
 
 # -----------------------------------------------------------------------------
 @Message.subclass
+@dataclass
 class Reconfigure_Command(Message):
     '''
     See Bluetooth AVDTP spec - 8.11.1 Reconfigure Command
     '''
 
-    def init_from_payload(self):
-        # pylint: disable=attribute-defined-outside-init
-        self.acp_seid = self.payload[0] >> 2
-        self.capabilities = ServiceCapabilities.parse_capabilities(self.payload[1:])
+    signal_identifier = AVDTP_RECONFIGURE
+    message_type = Message.MessageType.COMMAND
+
+    acp_seid: int = field(metadata=Message.SEID_METADATA)
+    capabilities: Iterable[ServiceCapabilities] = field(
+        metadata=ServiceCapabilities.METADATA
+    )
 
     def __str__(self) -> str:
         details = [
@@ -969,57 +935,86 @@ class Reconfigure_Command(Message):
 
 # -----------------------------------------------------------------------------
 @Message.subclass
+@dataclass
 class Reconfigure_Response(Message):
     '''
     See Bluetooth AVDTP spec - 8.11.2 Reconfigure Response
     '''
 
+    signal_identifier = AVDTP_RECONFIGURE
+    message_type = Message.MessageType.RESPONSE_ACCEPT
+
 
 # -----------------------------------------------------------------------------
 @Message.subclass
+@dataclass
 class Reconfigure_Reject(Set_Configuration_Reject):
     '''
     See Bluetooth AVDTP spec - 8.11.3 Reconfigure Reject
     '''
 
+    signal_identifier = AVDTP_RECONFIGURE
+    message_type = Message.MessageType.RESPONSE_REJECT
+
 
 # -----------------------------------------------------------------------------
 @Message.subclass
+@dataclass
 class Open_Command(Simple_Command):
     '''
     See Bluetooth AVDTP spec - 8.12.1 Open Stream Command
     '''
 
+    signal_identifier = AVDTP_OPEN
+    message_type = Message.MessageType.COMMAND
+
 
 # -----------------------------------------------------------------------------
 @Message.subclass
+@dataclass
 class Open_Response(Message):
     '''
     See Bluetooth AVDTP spec - 8.12.2 Open Stream Response
     '''
 
+    signal_identifier = AVDTP_OPEN
+    message_type = Message.MessageType.RESPONSE_ACCEPT
+
 
 # -----------------------------------------------------------------------------
 @Message.subclass
+@dataclass
 class Open_Reject(Simple_Reject):
     '''
     See Bluetooth AVDTP spec - 8.12.3 Open Stream Reject
     '''
 
+    signal_identifier = AVDTP_OPEN
+    message_type = Message.MessageType.RESPONSE_REJECT
+
 
 # -----------------------------------------------------------------------------
 @Message.subclass
+@dataclass
 class Start_Command(Message):
     '''
     See Bluetooth AVDTP spec - 8.13.1 Start Stream Command
     '''
 
-    def init_from_payload(self):
-        self.acp_seids = [x >> 2 for x in self.payload]
+    signal_identifier = AVDTP_START
+    message_type = Message.MessageType.COMMAND
 
-    def __init__(self, seids: Iterable[int]) -> None:
-        super().__init__(payload=bytes([seid << 2 for seid in seids]))
-        self.acp_seids = seids
+    acp_seids: Iterable[int] = field(
+        metadata=hci.metadata(
+            {
+                'serializer': lambda seids: bytes([seid << 2 for seid in seids]),
+                'parser': lambda data, offset: (
+                    len(data),
+                    [x >> 2 for x in data[offset:]],
+                ),
+            }
+        )
+    )
 
     def __str__(self) -> str:
         return self.to_string([f'ACP SEIDs: {self.acp_seids}'])
@@ -1027,138 +1022,188 @@ class Start_Command(Message):
 
 # -----------------------------------------------------------------------------
 @Message.subclass
+@dataclass
 class Start_Response(Message):
     '''
     See Bluetooth AVDTP spec - 8.13.2 Start Stream Response
     '''
 
+    signal_identifier = AVDTP_START
+    message_type = Message.MessageType.RESPONSE_ACCEPT
+
 
 # -----------------------------------------------------------------------------
 @Message.subclass
+@dataclass
 class Start_Reject(Message):
     '''
     See Bluetooth AVDTP spec - 8.13.3 Set Configuration Reject
     '''
 
-    def init_from_payload(self):
-        self.acp_seid = self.payload[0] >> 2
-        self.error_code = self.payload[1]
+    signal_identifier = AVDTP_START
+    message_type = Message.MessageType.RESPONSE_REJECT
 
-    def __init__(self, acp_seid, error_code):
-        super().__init__(payload=bytes([acp_seid << 2, error_code]))
-        self.acp_seid = acp_seid
-        self.error_code = error_code
+    acp_seid: int = field(metadata=Message.SEID_METADATA)
+    error_code: ErrorCode = field(metadata=ErrorCode.type_metadata(1))
 
     def __str__(self) -> str:
         details = [
             f'acp_seid:   {self.acp_seid}',
-            f'error_code: {name_or_number(AVDTP_ERROR_NAMES, self.error_code)}',
+            f'error_code: {self.error_code.name}',
         ]
         return self.to_string(details)
 
 
 # -----------------------------------------------------------------------------
 @Message.subclass
+@dataclass
 class Close_Command(Simple_Command):
     '''
     See Bluetooth AVDTP spec - 8.14.1 Close Stream Command
     '''
 
+    signal_identifier = AVDTP_CLOSE
+    message_type = Message.MessageType.COMMAND
+
 
 # -----------------------------------------------------------------------------
 @Message.subclass
+@dataclass
 class Close_Response(Message):
     '''
     See Bluetooth AVDTP spec - 8.14.2 Close Stream Response
     '''
 
+    signal_identifier = AVDTP_CLOSE
+    message_type = Message.MessageType.RESPONSE_ACCEPT
+
 
 # -----------------------------------------------------------------------------
 @Message.subclass
+@dataclass
 class Close_Reject(Simple_Reject):
     '''
     See Bluetooth AVDTP spec - 8.14.3 Close Stream Reject
     '''
 
+    signal_identifier = AVDTP_CLOSE
+    message_type = Message.MessageType.RESPONSE_REJECT
+
 
 # -----------------------------------------------------------------------------
 @Message.subclass
+@dataclass
 class Suspend_Command(Start_Command):
     '''
     See Bluetooth AVDTP spec - 8.15.1 Suspend Command
     '''
 
+    signal_identifier = AVDTP_SUSPEND
+    message_type = Message.MessageType.COMMAND
+
 
 # -----------------------------------------------------------------------------
 @Message.subclass
+@dataclass
 class Suspend_Response(Message):
     '''
     See Bluetooth AVDTP spec - 8.15.2 Suspend Response
     '''
 
+    signal_identifier = AVDTP_SUSPEND
+    message_type = Message.MessageType.RESPONSE_ACCEPT
+
 
 # -----------------------------------------------------------------------------
 @Message.subclass
+@dataclass
 class Suspend_Reject(Start_Reject):
     '''
     See Bluetooth AVDTP spec - 8.15.3 Suspend Reject
     '''
 
+    signal_identifier = AVDTP_SUSPEND
+    message_type = Message.MessageType.RESPONSE_REJECT
+
 
 # -----------------------------------------------------------------------------
 @Message.subclass
+@dataclass
 class Abort_Command(Simple_Command):
     '''
     See Bluetooth AVDTP spec - 8.16.1 Abort Command
     '''
 
+    signal_identifier = AVDTP_ABORT
+    message_type = Message.MessageType.COMMAND
+
 
 # -----------------------------------------------------------------------------
 @Message.subclass
+@dataclass
 class Abort_Response(Message):
     '''
     See Bluetooth AVDTP spec - 8.16.2 Abort Response
     '''
 
+    signal_identifier = AVDTP_ABORT
+    message_type = Message.MessageType.RESPONSE_ACCEPT
+
 
 # -----------------------------------------------------------------------------
 @Message.subclass
+@dataclass
 class Security_Control_Command(Message):
     '''
     See Bluetooth AVDTP spec - 8.17.1 Security Control Command
     '''
 
-    def init_from_payload(self):
-        # pylint: disable=attribute-defined-outside-init
-        self.acp_seid = self.payload[0] >> 2
-        self.data = self.payload[1:]
+    signal_identifier = AVDTP_SECURITY_CONTROL
+    message_type = Message.MessageType.COMMAND
+
+    acp_seid: int = field(metadata=Message.SEID_METADATA)
+    data: bytes = field(metadata=hci.metadata('*'))
 
     def __str__(self) -> str:
-        return self.to_string([f'ACP_SEID: {self.acp_seid}', f'data:    {self.data}'])
+        return self.to_string(
+            [f'ACP_SEID: {self.acp_seid}', f'data:    {self.data.hex()}']
+        )
 
 
 # -----------------------------------------------------------------------------
 @Message.subclass
+@dataclass
 class Security_Control_Response(Message):
     '''
     See Bluetooth AVDTP spec - 8.17.2 Security Control Response
     '''
 
+    signal_identifier = AVDTP_SECURITY_CONTROL
+    message_type = Message.MessageType.RESPONSE_ACCEPT
+
 
 # -----------------------------------------------------------------------------
 @Message.subclass
+@dataclass
 class Security_Control_Reject(Simple_Reject):
     '''
     See Bluetooth AVDTP spec - 8.17.3 Security Control Reject
     '''
 
+    signal_identifier = AVDTP_SECURITY_CONTROL
+    message_type = Message.MessageType.RESPONSE_REJECT
+
 
 # -----------------------------------------------------------------------------
 @Message.subclass
+@dataclass
 class General_Reject(Message):
     '''
     See Bluetooth AVDTP spec - 8.18 General Reject
     '''
+
+    signal_identifier = SignalIdentifier(0)
+    message_type = Message.MessageType.GENERAL_REJECT
 
     def to_string(self, details):
         return color('GENERAL_REJECT', 'yellow')
@@ -1166,15 +1211,27 @@ class General_Reject(Message):
 
 # -----------------------------------------------------------------------------
 @Message.subclass
+@dataclass
 class DelayReport_Command(Message):
     '''
     See Bluetooth AVDTP spec - 8.19.1 Delay Report Command
     '''
 
-    def init_from_payload(self):
-        # pylint: disable=attribute-defined-outside-init
-        self.acp_seid = self.payload[0] >> 2
-        self.delay = (self.payload[1] << 8) | (self.payload[2])
+    signal_identifier = AVDTP_DELAYREPORT
+    message_type = Message.MessageType.COMMAND
+
+    DELAY_METADATA = hci.metadata(
+        {
+            'serializer': lambda delay: bytes([delay >> 8, delay & 0xFF]),
+            'parser': lambda data, offset: (
+                offset + 2,
+                (data[offset] << 8) | (data[offset + 1]),
+            ),
+        }
+    )
+
+    acp_seid: int = field(metadata=Message.SEID_METADATA)
+    delay: int = field(metadata=DELAY_METADATA)
 
     def __str__(self) -> str:
         return self.to_string([f'ACP_SEID: {self.acp_seid}', f'delay:    {self.delay}'])
@@ -1182,18 +1239,26 @@ class DelayReport_Command(Message):
 
 # -----------------------------------------------------------------------------
 @Message.subclass
+@dataclass
 class DelayReport_Response(Message):
     '''
     See Bluetooth AVDTP spec - 8.19.2 Delay Report Response
     '''
 
+    signal_identifier = AVDTP_DELAYREPORT
+    message_type = Message.MessageType.RESPONSE_ACCEPT
+
 
 # -----------------------------------------------------------------------------
 @Message.subclass
+@dataclass
 class DelayReport_Reject(Simple_Reject):
     '''
     See Bluetooth AVDTP spec - 8.19.3 Delay Report Reject
     '''
+
+    signal_identifier = AVDTP_DELAYREPORT
+    message_type = Message.MessageType.RESPONSE_REJECT
 
 
 # -----------------------------------------------------------------------------
@@ -1203,6 +1268,7 @@ class Protocol(utils.EventEmitter):
     streams: dict[int, Stream]
     transaction_results: list[Optional[asyncio.Future[Message]]]
     channel_connector: Callable[[], Awaitable[l2cap.ClassicChannel]]
+    channel_acceptor: Optional[Stream]
 
     EVENT_OPEN = "open"
     EVENT_CLOSE = "close"
@@ -1212,10 +1278,6 @@ class Protocol(utils.EventEmitter):
         START_PACKET = 1
         CONTINUE_PACKET = 2
         END_PACKET = 3
-
-    @staticmethod
-    def packet_type_name(packet_type):
-        return name_or_number(Protocol.PACKET_TYPE_NAMES, packet_type)
 
     @staticmethod
     async def connect(
@@ -1349,7 +1411,7 @@ class Protocol(utils.EventEmitter):
                         ):
                             if isinstance(
                                 codec_capabilities.media_codec_information,
-                                VendorSpecificMediaCodecInformation,
+                                a2dp.VendorSpecificMediaCodecInformation,
                             ):
                                 if (
                                     codec_capabilities.media_codec_information.vendor_id
@@ -1389,21 +1451,15 @@ class Protocol(utils.EventEmitter):
 
         if message.message_type == Message.MessageType.COMMAND:
             # Command
-            signal_name = (
-                AVDTP_SIGNAL_NAMES.get(message.signal_identifier, "")
-                .replace("AVDTP_", "")
-                .lower()
-            )
+            signal_name = message.signal_identifier.name.lower()
             handler_name = f'on_{signal_name}_command'
             handler = getattr(self, handler_name, None)
             if handler:
                 try:
                     response = handler(message)
                     self.send_message(transaction_label, response)
-                except Exception as error:
-                    logger.warning(
-                        f'{color("!!! Exception in handler:", "red")} {error}'
-                    )
+                except Exception:
+                    logger.exception(color("!!! Exception in handler:", "red"))
             else:
                 logger.warning('unhandled command')
         else:
@@ -1578,11 +1634,11 @@ class Protocol(utils.EventEmitter):
     ) -> Optional[Message]:
         endpoint = self.get_local_endpoint_by_seid(command.acp_seid)
         if endpoint is None:
-            return Set_Configuration_Reject(AVDTP_BAD_ACP_SEID_ERROR)
+            return Set_Configuration_Reject(error_code=AVDTP_BAD_ACP_SEID_ERROR)
 
         # Check that the local endpoint isn't in use
         if endpoint.in_use:
-            return Set_Configuration_Reject(AVDTP_SEP_IN_USE_ERROR)
+            return Set_Configuration_Reject(error_code=AVDTP_SEP_IN_USE_ERROR)
 
         # Create a stream object for the pair of endpoints
         stream = Stream(self, endpoint, StreamEndPointProxy(self, command.int_seid))
@@ -1605,9 +1661,9 @@ class Protocol(utils.EventEmitter):
     def on_reconfigure_command(self, command: Reconfigure_Command) -> Optional[Message]:
         endpoint = self.get_local_endpoint_by_seid(command.acp_seid)
         if endpoint is None:
-            return Reconfigure_Reject(0, AVDTP_BAD_ACP_SEID_ERROR)
+            return Reconfigure_Reject(error_code=AVDTP_BAD_ACP_SEID_ERROR)
         if endpoint.stream is None:
-            return Reconfigure_Reject(0, AVDTP_BAD_STATE_ERROR)
+            return Reconfigure_Reject(error_code=AVDTP_BAD_STATE_ERROR)
 
         result = endpoint.stream.on_reconfigure_command(command.capabilities)
         return result or Reconfigure_Response()
@@ -1771,12 +1827,8 @@ class Stream:
 
     rtp_channel: Optional[l2cap.ClassicChannel]
 
-    @staticmethod
-    def state_name(state: int) -> str:
-        return name_or_number(AVDTP_STATE_NAMES, state)
-
-    def change_state(self, state: int) -> None:
-        logger.debug(f'{self} state change -> {color(self.state_name(state), "cyan")}')
+    def change_state(self, state: State) -> None:
+        logger.debug(f'{self} state change -> {color(state.name, "cyan")}')
         self.state = state
 
     def send_media_packet(self, packet: MediaPacket) -> None:
@@ -1784,22 +1836,22 @@ class Stream:
         self.rtp_channel.send_pdu(bytes(packet))
 
     async def configure(self) -> None:
-        if self.state != AVDTP_IDLE_STATE:
+        if self.state != State.IDLE:
             raise InvalidStateError('current state is not IDLE')
 
         await self.remote_endpoint.set_configuration(
             self.local_endpoint.seid, self.local_endpoint.configuration
         )
-        self.change_state(AVDTP_CONFIGURED_STATE)
+        self.change_state(State.CONFIGURED)
 
     async def open(self) -> None:
-        if self.state != AVDTP_CONFIGURED_STATE:
+        if self.state != State.CONFIGURED:
             raise InvalidStateError('current state is not CONFIGURED')
 
         logger.debug('opening remote endpoint')
         await self.remote_endpoint.open()
 
-        self.change_state(AVDTP_OPEN_STATE)
+        self.change_state(State.OPEN)
 
         # Create a channel for RTP packets
         self.rtp_channel = (
@@ -1811,10 +1863,10 @@ class Stream:
     async def start(self) -> None:
         """[Source] Start streaming."""
         # Auto-open if needed
-        if self.state == AVDTP_CONFIGURED_STATE:
+        if self.state == State.CONFIGURED:
             await self.open()
 
-        if self.state != AVDTP_OPEN_STATE:
+        if self.state != State.OPEN:
             raise InvalidStateError('current state is not OPEN')
 
         logger.debug('starting remote endpoint')
@@ -1823,11 +1875,11 @@ class Stream:
         logger.debug('starting local endpoint')
         await self.local_endpoint.start()
 
-        self.change_state(AVDTP_STREAMING_STATE)
+        self.change_state(State.STREAMING)
 
     async def stop(self) -> None:
         """[Source] Stop streaming and transit to OPEN state."""
-        if self.state != AVDTP_STREAMING_STATE:
+        if self.state != State.STREAMING:
             raise InvalidStateError('current state is not STREAMING')
 
         logger.debug('stopping local endpoint')
@@ -1836,11 +1888,11 @@ class Stream:
         logger.debug('stopping remote endpoint')
         await self.remote_endpoint.stop()
 
-        self.change_state(AVDTP_OPEN_STATE)
+        self.change_state(State.OPEN)
 
     async def close(self) -> None:
         """[Source] Close channel and transit to IDLE state."""
-        if self.state not in (AVDTP_OPEN_STATE, AVDTP_STREAMING_STATE):
+        if self.state not in (State.OPEN, State.STREAMING):
             raise InvalidStateError('current state is not OPEN or STREAMING')
 
         logger.debug('closing local endpoint')
@@ -1850,7 +1902,7 @@ class Stream:
         await self.remote_endpoint.close()
 
         # Release any channels we may have created
-        self.change_state(AVDTP_CLOSING_STATE)
+        self.change_state(State.CLOSING)
         if self.rtp_channel:
             await self.rtp_channel.disconnect()
             self.rtp_channel = None
@@ -1858,32 +1910,36 @@ class Stream:
         # Release the endpoint
         self.local_endpoint.in_use = 0
 
-        self.change_state(AVDTP_IDLE_STATE)
+        self.change_state(State.IDLE)
 
-    def on_set_configuration_command(self, configuration):
-        if self.state != AVDTP_IDLE_STATE:
-            return Set_Configuration_Reject(AVDTP_BAD_STATE_ERROR)
+    def on_set_configuration_command(
+        self, configuration: Iterable[ServiceCapabilities]
+    ) -> Optional[Message]:
+        if self.state != State.IDLE:
+            return Set_Configuration_Reject(error_code=AVDTP_BAD_STATE_ERROR)
 
         result = self.local_endpoint.on_set_configuration_command(configuration)
         if result is not None:
             return result
 
-        self.change_state(AVDTP_CONFIGURED_STATE)
+        self.change_state(State.CONFIGURED)
         return None
 
-    def on_get_configuration_command(self):
+    def on_get_configuration_command(self) -> Optional[Message]:
         if self.state not in (
-            AVDTP_CONFIGURED_STATE,
-            AVDTP_OPEN_STATE,
-            AVDTP_STREAMING_STATE,
+            State.CONFIGURED,
+            State.OPEN,
+            State.STREAMING,
         ):
-            return Get_Configuration_Reject(AVDTP_BAD_STATE_ERROR)
+            return Get_Configuration_Reject(error_code=AVDTP_BAD_STATE_ERROR)
 
         return self.local_endpoint.on_get_configuration_command()
 
-    def on_reconfigure_command(self, configuration):
-        if self.state != AVDTP_OPEN_STATE:
-            return Reconfigure_Reject(AVDTP_BAD_STATE_ERROR)
+    def on_reconfigure_command(
+        self, configuration: Iterable[ServiceCapabilities]
+    ) -> Optional[Message]:
+        if self.state != State.OPEN:
+            return Reconfigure_Reject(error_code=AVDTP_BAD_STATE_ERROR)
 
         result = self.local_endpoint.on_reconfigure_command(configuration)
         if result is not None:
@@ -1891,8 +1947,8 @@ class Stream:
 
         return None
 
-    def on_open_command(self):
-        if self.state != AVDTP_CONFIGURED_STATE:
+    def on_open_command(self) -> Optional[Message]:
+        if self.state != State.CONFIGURED:
             return Open_Reject(AVDTP_BAD_STATE_ERROR)
 
         result = self.local_endpoint.on_open_command()
@@ -1902,11 +1958,11 @@ class Stream:
         # Register to accept the next channel
         self.protocol.channel_acceptor = self
 
-        self.change_state(AVDTP_OPEN_STATE)
+        self.change_state(State.OPEN)
         return None
 
-    def on_start_command(self):
-        if self.state != AVDTP_OPEN_STATE:
+    def on_start_command(self) -> Optional[Message]:
+        if self.state != State.OPEN:
             return Open_Reject(AVDTP_BAD_STATE_ERROR)
 
         # Check that we have an RTP channel
@@ -1918,46 +1974,47 @@ class Stream:
         if result is not None:
             return result
 
-        self.change_state(AVDTP_STREAMING_STATE)
+        self.change_state(State.STREAMING)
         return None
 
-    def on_suspend_command(self):
-        if self.state != AVDTP_STREAMING_STATE:
+    def on_suspend_command(self) -> Optional[Message]:
+        if self.state != State.STREAMING:
             return Open_Reject(AVDTP_BAD_STATE_ERROR)
 
         result = self.local_endpoint.on_suspend_command()
         if result is not None:
             return result
 
-        self.change_state(AVDTP_OPEN_STATE)
+        self.change_state(State.OPEN)
         return None
 
-    def on_close_command(self):
-        if self.state not in (AVDTP_OPEN_STATE, AVDTP_STREAMING_STATE):
+    def on_close_command(self) -> Optional[Message]:
+        if self.state not in (State.OPEN, State.STREAMING):
             return Open_Reject(AVDTP_BAD_STATE_ERROR)
 
         result = self.local_endpoint.on_close_command()
         if result is not None:
             return result
 
-        self.change_state(AVDTP_CLOSING_STATE)
+        self.change_state(State.CLOSING)
 
         if self.rtp_channel is None:
             # No channel to release, we're done
-            self.change_state(AVDTP_IDLE_STATE)
+            self.change_state(State.IDLE)
         else:
             # TODO: set a timer as we wait for the RTP channel to be closed
             pass
 
         return None
 
-    def on_abort_command(self):
+    def on_abort_command(self) -> Optional[Message]:
         if self.rtp_channel is None:
             # No need to wait
-            self.change_state(AVDTP_IDLE_STATE)
+            self.change_state(State.IDLE)
         else:
             # Wait for the RTP channel to be closed
-            self.change_state(AVDTP_ABORTING_STATE)
+            self.change_state(State.ABORTING)
+        return None
 
     def on_l2cap_connection(self, channel: l2cap.ClassicChannel) -> None:
         logger.debug(color('<<< stream channel connected', 'magenta'))
@@ -1978,8 +2035,8 @@ class Stream:
         self.local_endpoint.in_use = 0
         self.rtp_channel = None
 
-        if self.state in (AVDTP_CLOSING_STATE, AVDTP_ABORTING_STATE):
-            self.change_state(AVDTP_IDLE_STATE)
+        if self.state in (State.CLOSING, State.ABORTING):
+            self.change_state(State.IDLE)
         else:
             logger.warning('unexpected channel close while not CLOSING or ABORTING')
 
@@ -1997,7 +2054,7 @@ class Stream:
         self.local_endpoint = local_endpoint
         self.remote_endpoint = remote_endpoint
         self.rtp_channel = None
-        self.state = AVDTP_IDLE_STATE
+        self.state = State.IDLE
 
         local_endpoint.stream = self
         local_endpoint.in_use = 1
@@ -2005,42 +2062,18 @@ class Stream:
     def __str__(self) -> str:
         return (
             f'Stream({self.local_endpoint.seid} -> '
-            f'{self.remote_endpoint.seid} {self.state_name(self.state)})'
+            f'{self.remote_endpoint.seid} {self.state.name})'
         )
 
 
 # -----------------------------------------------------------------------------
+@dataclass
 class StreamEndPoint:
-    def __init__(
-        self,
-        seid: int,
-        media_type: int,
-        tsep: int,
-        in_use: int,
-        capabilities: Iterable[ServiceCapabilities],
-    ) -> None:
-        self.seid = seid
-        self.media_type = media_type
-        self.tsep = tsep
-        self.in_use = in_use
-        self.capabilities = capabilities
-
-    def __str__(self) -> str:
-        media_type = f'{name_or_number(AVDTP_MEDIA_TYPE_NAMES, self.media_type)}'
-        tsep = f'{name_or_number(AVDTP_TSEP_NAMES, self.tsep)}'
-        return '\n'.join(
-            [
-                'SEP(',
-                f'  seid={self.seid}',
-                f'  media_type={media_type}',
-                f'  tsep={tsep}',
-                f'  in_use={self.in_use}',
-                '  capabilities=[',
-                '\n'.join([f'    {x}' for x in self.capabilities]),
-                '  ]',
-                ')',
-            ]
-        )
+    seid: int
+    media_type: MediaType
+    tsep: StreamEndPointType
+    in_use: int
+    capabilities: Iterable[ServiceCapabilities]
 
 
 # -----------------------------------------------------------------------------
@@ -2076,8 +2109,8 @@ class DiscoveredStreamEndPoint(StreamEndPoint, StreamEndPointProxy):
         self,
         protocol: Protocol,
         seid: int,
-        media_type: int,
-        tsep: int,
+        media_type: MediaType,
+        tsep: StreamEndPointType,
         in_use: int,
         capabilities: Iterable[ServiceCapabilities],
     ) -> None:
@@ -2106,8 +2139,8 @@ class LocalStreamEndPoint(StreamEndPoint, utils.EventEmitter):
         self,
         protocol: Protocol,
         seid: int,
-        media_type: int,
-        tsep: int,
+        media_type: MediaType,
+        tsep: StreamEndPointType,
         capabilities: Iterable[ServiceCapabilities],
         configuration: Optional[Iterable[ServiceCapabilities]] = None,
     ):
@@ -2126,10 +2159,15 @@ class LocalStreamEndPoint(StreamEndPoint, utils.EventEmitter):
     async def close(self) -> None:
         """[Source Only] Handles when receiving close command."""
 
-    def on_reconfigure_command(self, command) -> Optional[Message]:
+    def on_reconfigure_command(
+        self, command: Iterable[ServiceCapabilities]
+    ) -> Optional[Message]:
+        del command  # unused.
         return None
 
-    def on_set_configuration_command(self, configuration) -> Optional[Message]:
+    def on_set_configuration_command(
+        self, configuration: Iterable[ServiceCapabilities]
+    ) -> Optional[Message]:
         logger.debug(
             '<<< received configuration: '
             f'{",".join([str(capability) for capability in configuration])}'
@@ -2185,13 +2223,13 @@ class LocalSource(LocalStreamEndPoint):
         protocol: Protocol,
         seid: int,
         codec_capabilities: MediaCodecCapabilities,
-        other_capabilitiles: Iterable[ServiceCapabilities],
+        other_capabilities: Iterable[ServiceCapabilities],
         packet_pump: MediaPacketPump,
     ) -> None:
         capabilities = [
             ServiceCapabilities(AVDTP_MEDIA_TRANSPORT_SERVICE_CATEGORY),
             codec_capabilities,
-        ] + list(other_capabilitiles)
+        ] + list(other_capabilities)
         super().__init__(
             protocol,
             seid,
@@ -2202,23 +2240,29 @@ class LocalSource(LocalStreamEndPoint):
         )
         self.packet_pump = packet_pump
 
+    @override
     async def start(self) -> None:
         if self.packet_pump and self.stream and self.stream.rtp_channel:
             return await self.packet_pump.start(self.stream.rtp_channel)
 
         self.emit(self.EVENT_START)
 
+    @override
     async def stop(self) -> None:
         if self.packet_pump:
             return await self.packet_pump.stop()
 
         self.emit(self.EVENT_STOP)
 
-    def on_start_command(self):
+    @override
+    def on_start_command(self) -> Optional[Message]:
         asyncio.create_task(self.start())
+        return None
 
-    def on_suspend_command(self):
+    @override
+    def on_suspend_command(self) -> Optional[Message]:
         asyncio.create_task(self.stop())
+        return None
 
 
 # -----------------------------------------------------------------------------
@@ -2238,16 +2282,20 @@ class LocalSink(LocalStreamEndPoint):
             capabilities,
         )
 
-    def on_rtp_channel_open(self):
+    def on_rtp_channel_open(self) -> None:
         logger.debug(color('<<< RTP channel open', 'magenta'))
+        if not self.stream:
+            raise InvalidStateError('Stream is None')
+        if not self.stream.rtp_channel:
+            raise InvalidStateError('RTP channel is None')
         self.stream.rtp_channel.sink = self.on_avdtp_packet
         super().on_rtp_channel_open()
 
-    def on_rtp_channel_close(self):
+    def on_rtp_channel_close(self) -> None:
         logger.debug(color('<<< RTP channel close', 'magenta'))
         super().on_rtp_channel_close()
 
-    def on_avdtp_packet(self, packet):
+    def on_avdtp_packet(self, packet: bytes) -> None:
         rtp_packet = MediaPacket.from_bytes(packet)
         logger.debug(
             f'{color("<<< RTP Packet:", "green")} '
