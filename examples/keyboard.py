@@ -16,36 +16,36 @@
 # Imports
 # -----------------------------------------------------------------------------
 import asyncio
-import sys
-import struct
 import json
+import struct
+import sys
 
-import websockets
+import websockets.asyncio.server
 
+import bumble.logging
+from bumble import data_types
 from bumble.colors import color
 from bumble.core import AdvertisingData
-from bumble.device import Device, Connection, Peer
-from bumble.utils import AsyncRunner
-from bumble.transport import open_transport
+from bumble.device import Connection, Device, Peer
 from bumble.gatt import (
-    Descriptor,
-    Service,
-    Characteristic,
-    CharacteristicValue,
-    GATT_DEVICE_INFORMATION_SERVICE,
-    GATT_HUMAN_INTERFACE_DEVICE_SERVICE,
-    GATT_BATTERY_SERVICE,
     GATT_BATTERY_LEVEL_CHARACTERISTIC,
+    GATT_BATTERY_SERVICE,
+    GATT_DEVICE_INFORMATION_SERVICE,
+    GATT_HID_CONTROL_POINT_CHARACTERISTIC,
+    GATT_HID_INFORMATION_CHARACTERISTIC,
+    GATT_HUMAN_INTERFACE_DEVICE_SERVICE,
     GATT_MANUFACTURER_NAME_STRING_CHARACTERISTIC,
+    GATT_PROTOCOL_MODE_CHARACTERISTIC,
     GATT_REPORT_CHARACTERISTIC,
     GATT_REPORT_MAP_CHARACTERISTIC,
-    GATT_PROTOCOL_MODE_CHARACTERISTIC,
-    GATT_HID_INFORMATION_CHARACTERISTIC,
-    GATT_HID_CONTROL_POINT_CHARACTERISTIC,
     GATT_REPORT_REFERENCE_DESCRIPTOR,
+    Characteristic,
+    CharacteristicValue,
+    Descriptor,
+    Service,
 )
-import bumble.logging
-
+from bumble.transport import open_transport
+from bumble.utils import AsyncRunner
 
 # -----------------------------------------------------------------------------
 
@@ -342,16 +342,18 @@ async def keyboard_device(device, command):
     device.advertising_data = bytes(
         AdvertisingData(
             [
-                (
-                    AdvertisingData.COMPLETE_LOCAL_NAME,
-                    bytes('Bumble Keyboard', 'utf-8'),
+                data_types.CompleteLocalName('Bumble Keyboard'),
+                data_types.IncompleteListOf16BitServiceUUIDs(
+                    [GATT_HUMAN_INTERFACE_DEVICE_SERVICE]
                 ),
-                (
-                    AdvertisingData.INCOMPLETE_LIST_OF_16_BIT_SERVICE_CLASS_UUIDS,
-                    bytes(GATT_HUMAN_INTERFACE_DEVICE_SERVICE),
+                data_types.Appearance(
+                    data_types.Appearance.Category.HUMAN_INTERFACE_DEVICE,
+                    data_types.Appearance.HumanInterfaceDeviceSubcategory.KEYBOARD,
                 ),
-                (AdvertisingData.APPEARANCE, struct.pack('<H', 0x03C1)),
-                (AdvertisingData.FLAGS, bytes([0x05])),
+                data_types.Flags(
+                    AdvertisingData.Flags.LE_LIMITED_DISCOVERABLE_MODE
+                    | AdvertisingData.Flags.BR_EDR_NOT_SUPPORTED
+                ),
             ]
         )
     )
@@ -365,7 +367,7 @@ async def keyboard_device(device, command):
 
     if command == 'web':
         # Start a Websocket server to receive events from a web page
-        async def serve(websocket, _path):
+        async def serve(websocket: websockets.asyncio.server.ServerConnection):
             while True:
                 try:
                     message = await websocket.recv()
@@ -396,7 +398,7 @@ async def keyboard_device(device, command):
                     pass
 
         # pylint: disable-next=no-member
-        await websockets.serve(serve, 'localhost', 8989)
+        await websockets.asyncio.server.serve(serve, 'localhost', 8989)
         await asyncio.get_event_loop().create_future()
     else:
         message = bytes('hello', 'ascii')

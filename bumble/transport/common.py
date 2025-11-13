@@ -16,18 +16,18 @@
 # Imports
 # -----------------------------------------------------------------------------
 from __future__ import annotations
-import contextlib
-import struct
+
 import asyncio
-import logging
+import contextlib
 import io
+import logging
+import struct
+from collections.abc import Awaitable, Callable
 from typing import Any, ContextManager, Optional, Protocol
 
-from bumble import core
-from bumble import hci
+from bumble import core, hci
 from bumble.colors import color
 from bumble.snoop import Snooper
-
 
 # -----------------------------------------------------------------------------
 # Logging
@@ -90,8 +90,8 @@ class PacketPump:
             try:
                 # Deliver the packet to the sink
                 self.sink.on_packet(await self.reader.next_packet())
-            except Exception as error:
-                logger.warning(f'!!! {error}')
+            except Exception:
+                logger.exception('!!!')
 
 
 # -----------------------------------------------------------------------------
@@ -158,10 +158,8 @@ class PacketParser:
                     if self.sink:
                         try:
                             self.sink.on_packet(bytes(self.packet))
-                        except Exception as error:
-                            logger.exception(
-                                color(f'!!! Exception in on_packet: {error}', 'red')
-                            )
+                        except Exception:
+                            logger.exception(color('!!! Exception in on_packet', 'red'))
                     self.reset()
 
     def set_packet_sink(self, sink: TransportSink) -> None:
@@ -378,7 +376,7 @@ class PumpedPacketSource(ParserSource):
                         self.terminated.set_result(None)
                     break
                 except Exception as error:
-                    logger.warning(f'exception while waiting for packet: {error}')
+                    logger.exception('exception while waiting for packet')
                     if not self.terminated.done():
                         self.terminated.set_exception(error)
                     break
@@ -392,15 +390,17 @@ class PumpedPacketSource(ParserSource):
 
 # -----------------------------------------------------------------------------
 class PumpedPacketSink:
-    def __init__(self, send):
+    pump_task: Optional[asyncio.Task[None]]
+
+    def __init__(self, send: Callable[[bytes], Awaitable[Any]]):
         self.send_function = send
-        self.packet_queue = asyncio.Queue()
+        self.packet_queue = asyncio.Queue[bytes]()
         self.pump_task = None
 
     def on_packet(self, packet: bytes) -> None:
         self.packet_queue.put_nowait(packet)
 
-    def start(self):
+    def start(self) -> None:
         async def pump_packets():
             while True:
                 try:
@@ -409,8 +409,8 @@ class PumpedPacketSink:
                 except asyncio.CancelledError:
                     logger.debug('sink pump task done')
                     break
-                except Exception as error:
-                    logger.warning(f'exception while sending packet: {error}')
+                except Exception:
+                    logger.exception('exception while sending packet')
                     break
 
         self.pump_task = asyncio.create_task(pump_packets())

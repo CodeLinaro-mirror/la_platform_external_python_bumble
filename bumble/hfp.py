@@ -17,44 +17,33 @@
 # -----------------------------------------------------------------------------
 from __future__ import annotations
 
+import asyncio
 import collections
 import collections.abc
-import logging
-import asyncio
 import dataclasses
 import enum
-import traceback
+import logging
 import re
-from typing import (
-    Union,
-    Any,
-    Optional,
-    ClassVar,
-    Iterable,
-    TYPE_CHECKING,
-)
+import traceback
+from typing import TYPE_CHECKING, Any, ClassVar, Iterable, Optional, Union
+
 from typing_extensions import Self
 
-from bumble import at
-from bumble import device
-from bumble import rfcomm
-from bumble import sdp
-from bumble import utils
+from bumble import at, device, rfcomm, sdp, utils
 from bumble.colors import color
 from bumble.core import (
-    ProtocolError,
     BT_GENERIC_AUDIO_SERVICE,
-    BT_HANDSFREE_SERVICE,
     BT_HANDSFREE_AUDIO_GATEWAY_SERVICE,
+    BT_HANDSFREE_SERVICE,
     BT_L2CAP_PROTOCOL_ID,
     BT_RFCOMM_PROTOCOL_ID,
+    ProtocolError,
 )
 from bumble.hci import (
-    HCI_Enhanced_Setup_Synchronous_Connection_Command,
-    CodingFormat,
     CodecID,
+    CodingFormat,
+    HCI_Enhanced_Setup_Synchronous_Connection_Command,
 )
-
 
 # -----------------------------------------------------------------------------
 # Logging
@@ -500,9 +489,9 @@ STATUS_CODES = {
 
 @dataclasses.dataclass
 class HfConfiguration:
-    supported_hf_features: list[HfFeature]
-    supported_hf_indicators: list[HfIndicator]
-    supported_audio_codecs: list[AudioCodec]
+    supported_hf_features: collections.abc.Sequence[HfFeature]
+    supported_hf_indicators: collections.abc.Sequence[HfIndicator]
+    supported_audio_codecs: collections.abc.Sequence[AudioCodec]
 
 
 @dataclasses.dataclass
@@ -764,7 +753,7 @@ class HfProtocol(utils.EventEmitter):
 
         # Build local features.
         self.supported_hf_features = sum(configuration.supported_hf_features)
-        self.supported_audio_codecs = configuration.supported_audio_codecs
+        self.supported_audio_codecs = list(configuration.supported_audio_codecs)
 
         self.hf_indicators = {
             indicator: HfIndicatorState(indicator=indicator)

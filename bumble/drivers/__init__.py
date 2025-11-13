@@ -20,12 +20,13 @@ like loading firmware after a cold start.
 # Imports
 # -----------------------------------------------------------------------------
 from __future__ import annotations
+
 import logging
 import pathlib
 import platform
-from typing import Iterable, Optional, TYPE_CHECKING
+from typing import TYPE_CHECKING, Iterable, Optional
 
-from bumble.drivers import rtk, intel
+from bumble.drivers import intel, rtk
 from bumble.drivers.common import Driver
 
 if TYPE_CHECKING:
@@ -48,6 +49,10 @@ async def get_driver_for_host(host: Host) -> Optional[Driver]:
     driver_classes: dict[str, type[Driver]] = {"rtk": rtk.Driver, "intel": intel.Driver}
     probe_list: Iterable[str]
     if driver_name := host.hci_metadata.get("driver"):
+        # The "driver" metadata may include runtime options after a '/' (for example
+        # "intel/ddc=..."). Keep only the base driver name (the portion before the
+        # first slash) so it matches a key in driver_classes (e.g. "intel").
+        driver_name = driver_name.split("/")[0]
         # Only probe a single driver
         probe_list = [driver_name]
     else:

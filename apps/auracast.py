@@ -24,12 +24,7 @@ import dataclasses
 import functools
 import logging
 import struct
-from typing import (
-    Any,
-    AsyncGenerator,
-    Coroutine,
-    Optional,
-)
+from typing import Any, AsyncGenerator, Coroutine, Optional
 
 import click
 
@@ -40,21 +35,14 @@ except ImportError as e:
         "Try `python -m pip install \"git+https://github.com/google/liblc3.git\"`."
     ) from e
 
-from bumble.audio import io as audio_io
-from bumble.colors import color
-from bumble import company_ids
-from bumble import core
-from bumble import gatt
-from bumble import hci
-from bumble.profiles import bap
-from bumble.profiles import le_audio
-from bumble.profiles import pbp
-from bumble.profiles import bass
 import bumble.device
+import bumble.logging
 import bumble.transport
 import bumble.utils
-import bumble.logging
-
+from bumble import company_ids, core, data_types, gatt, hci
+from bumble.audio import io as audio_io
+from bumble.colors import color
+from bumble.profiles import bap, bass, le_audio, pbp
 
 # -----------------------------------------------------------------------------
 # Logging
@@ -871,21 +859,13 @@ async def run_transmit(
         )
         broadcast_audio_announcement = bap.BroadcastAudioAnnouncement(broadcast_id)
 
-        advertising_manufacturer_data = (
-            b''
-            if manufacturer_data is None
-            else bytes(
-                core.AdvertisingData(
-                    [
-                        (
-                            core.AdvertisingData.MANUFACTURER_SPECIFIC_DATA,
-                            struct.pack('<H', manufacturer_data[0])
-                            + manufacturer_data[1],
-                        )
-                    ]
-                )
+        advertising_data_types: list[core.DataType] = [
+            data_types.BroadcastName(broadcast_name)
+        ]
+        if manufacturer_data is not None:
+            advertising_data_types.append(
+                data_types.ManufacturerSpecificData(*manufacturer_data)
             )
-        )
 
         advertising_set = await device.create_advertising_set(
             advertising_parameters=bumble.device.AdvertisingParameters(
@@ -897,12 +877,7 @@ async def run_transmit(
             ),
             advertising_data=(
                 broadcast_audio_announcement.get_advertising_data()
-                + bytes(
-                    core.AdvertisingData(
-                        [(core.AdvertisingData.BROADCAST_NAME, broadcast_name.encode())]
-                    )
-                )
-                + advertising_manufacturer_data
+                + bytes(core.AdvertisingData(advertising_data_types))
             ),
             periodic_advertising_parameters=bumble.device.PeriodicAdvertisingParameters(
                 periodic_advertising_interval_min=80,

@@ -16,24 +16,26 @@
 # Imports
 # -----------------------------------------------------------------------------
 from __future__ import annotations
+
 import asyncio
 import logging
 import struct
-from typing import Iterable, NewType, Optional, Union, Sequence, TYPE_CHECKING
+from typing import TYPE_CHECKING, Iterable, NewType, Optional, Sequence, Union
+
 from typing_extensions import Self
 
 from bumble import core, l2cap
 from bumble.colors import color
 from bumble.core import (
-    InvalidStateError,
     InvalidArgumentError,
     InvalidPacketError,
+    InvalidStateError,
     ProtocolError,
 )
-from bumble.hci import HCI_Object, name_or_number, key_with_value
+from bumble.hci import HCI_Object, key_with_value, name_or_number
 
 if TYPE_CHECKING:
-    from bumble.device import Device, Connection
+    from bumble.device import Connection, Device
 
 # -----------------------------------------------------------------------------
 # Logging
@@ -1084,8 +1086,8 @@ class Server:
     def on_pdu(self, pdu):
         try:
             sdp_pdu = SDP_PDU.from_bytes(pdu)
-        except Exception as error:
-            logger.warning(color(f'failed to parse SDP Request PDU: {error}', 'red'))
+        except Exception:
+            logger.exception(color('failed to parse SDP Request PDU', 'red'))
             self.send_response(
                 SDP_ErrorResponse(
                     transaction_id=0, error_code=SDP_INVALID_REQUEST_SYNTAX_ERROR
@@ -1100,8 +1102,8 @@ class Server:
         if handler:
             try:
                 handler(sdp_pdu)
-            except Exception as error:
-                logger.exception(f'{color("!!! Exception in handler:", "red")} {error}')
+            except Exception:
+                logger.exception(color("!!! Exception in handler:", "red"))
                 self.send_response(
                     SDP_ErrorResponse(
                         transaction_id=sdp_pdu.transaction_id,

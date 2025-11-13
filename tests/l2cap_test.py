@@ -19,12 +19,13 @@ import asyncio
 import logging
 import os
 import random
+
 import pytest
 
-from bumble.core import ProtocolError
 from bumble import l2cap
-from .test_utils import TwoDevices, async_barrier
+from bumble.core import ProtocolError
 
+from .test_utils import TwoDevices, async_barrier
 
 # -----------------------------------------------------------------------------
 # Logging
@@ -71,6 +72,55 @@ def test_helpers():
     assert srq.psm == rq.psm
     assert srq.source_cid == rq.source_cid
     assert srq.identifier == rq.identifier
+
+
+# -----------------------------------------------------------------------------
+def test_l2cap_credit_based_connection_request() -> None:
+    frame = l2cap.L2CAP_Credit_Based_Connection_Request(
+        identifier=1, spsm=2, mtu=3, mps=4, initial_credits=5, source_cid=[6, 7, 8]
+    )
+
+    parsed = l2cap.L2CAP_Control_Frame.from_bytes(bytes(frame))
+    assert parsed == frame
+
+
+# -----------------------------------------------------------------------------
+def test_l2cap_credit_based_connection_response() -> None:
+    frame = l2cap.L2CAP_Credit_Based_Connection_Response(
+        identifier=1,
+        mtu=2,
+        mps=3,
+        initial_credits=4,
+        result=l2cap.L2CAP_Credit_Based_Connection_Response.Result.ALL_CONNECTIONS_PENDING_AUTHENTICATION_PENDING,
+        destination_cid=[6, 7, 8],
+    )
+
+    parsed = l2cap.L2CAP_Control_Frame.from_bytes(bytes(frame))
+    assert parsed == frame
+
+
+# -----------------------------------------------------------------------------
+def test_l2cap_credit_based_reconfigure_request() -> None:
+    frame = l2cap.L2CAP_Credit_Based_Reconfigure_Request(
+        identifier=1,
+        mtu=2,
+        mps=3,
+        destination_cid=[6, 7, 8],
+    )
+
+    parsed = l2cap.L2CAP_Control_Frame.from_bytes(bytes(frame))
+    assert parsed == frame
+
+
+# -----------------------------------------------------------------------------
+def test_l2cap_credit_based_reconfigure_response() -> None:
+    frame = l2cap.L2CAP_Credit_Based_Reconfigure_Response(
+        identifier=1,
+        result=l2cap.L2CAP_Credit_Based_Reconfigure_Response.Result.RECONFIGURATION_FAILED_OTHER_UNACCEPTABLE_PARAMETERS,
+    )
+
+    parsed = l2cap.L2CAP_Control_Frame.from_bytes(bytes(frame))
+    assert parsed == frame
 
 
 # -----------------------------------------------------------------------------
