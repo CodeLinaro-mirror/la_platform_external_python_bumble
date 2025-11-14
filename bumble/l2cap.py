@@ -16,32 +16,32 @@
 # Imports
 # -----------------------------------------------------------------------------
 from __future__ import annotations
+
 import asyncio
 import dataclasses
 import enum
 import logging
 import struct
-
 from collections import deque
+from collections.abc import Sequence
 from typing import (
-    Optional,
-    Callable,
+    TYPE_CHECKING,
     Any,
-    Union,
+    Callable,
+    ClassVar,
     Iterable,
+    Optional,
     SupportsBytes,
     TypeVar,
-    ClassVar,
-    TYPE_CHECKING,
+    Union,
 )
 
-from bumble import utils
-from bumble import hci
+from bumble import hci, utils
 from bumble.colors import color
 from bumble.core import (
-    InvalidStateError,
     InvalidArgumentError,
     InvalidPacketError,
+    InvalidStateError,
     OutOfResourcesError,
     ProtocolError,
 )
@@ -112,6 +112,10 @@ class CommandCode(hci.SpecableEnum):
     L2CAP_LE_CREDIT_BASED_CONNECTION_REQUEST   = 0x14
     L2CAP_LE_CREDIT_BASED_CONNECTION_RESPONSE  = 0x15
     L2CAP_LE_FLOW_CONTROL_CREDIT               = 0x16
+    L2CAP_CREDIT_BASED_CONNECTION_REQUEST      = 0x17
+    L2CAP_CREDIT_BASED_CONNECTION_RESPONSE     = 0x18
+    L2CAP_CREDIT_BASED_RECONFIGURE_REQUEST     = 0x19
+    L2CAP_CREDIT_BASED_RECONFIGURE_RESPONSE    = 0x1A
 
 L2CAP_CONNECTION_PARAMETERS_ACCEPTED_RESULT = 0x0000
 L2CAP_CONNECTION_PARAMETERS_REJECTED_RESULT = 0x0001
@@ -593,6 +597,109 @@ class L2CAP_LE_Flow_Control_Credit(L2CAP_Control_Frame):
 
     cid: int = dataclasses.field(metadata=hci.metadata(2))
     credits: int = dataclasses.field(metadata=hci.metadata(2))
+
+
+# -----------------------------------------------------------------------------
+@L2CAP_Control_Frame.subclass
+@dataclasses.dataclass
+class L2CAP_Credit_Based_Connection_Request(L2CAP_Control_Frame):
+    '''
+    See Bluetooth spec @ Vol 3, Part A - 4.25 L2CAP_CREDIT_BASED_CONNECTION_REQ (0x17).
+    '''
+
+    @classmethod
+    def parse_cid_list(cls, data: bytes, offset: int) -> tuple[int, list[int]]:
+        count = (len(data) - offset) // 2
+        return len(data), list(struct.unpack_from("<" + ("H" * count), data, offset))
+
+    @classmethod
+    def serialize_cid_list(cls, cids: Sequence[int]) -> bytes:
+        return b"".join([struct.pack("<H", cid) for cid in cids])
+
+    CID_METADATA: ClassVar[dict[str, Any]] = hci.metadata(
+        {
+            'parser': lambda data, offset: L2CAP_Credit_Based_Connection_Request.parse_cid_list(
+                data, offset
+            ),
+            'serializer': lambda value: L2CAP_Credit_Based_Connection_Request.serialize_cid_list(
+                value
+            ),
+        }
+    )
+
+    spsm: int = dataclasses.field(metadata=hci.metadata(2))
+    mtu: int = dataclasses.field(metadata=hci.metadata(2))
+    mps: int = dataclasses.field(metadata=hci.metadata(2))
+    initial_credits: int = dataclasses.field(metadata=hci.metadata(2))
+    source_cid: Sequence[int] = dataclasses.field(metadata=CID_METADATA)
+
+
+# -----------------------------------------------------------------------------
+@L2CAP_Control_Frame.subclass
+@dataclasses.dataclass
+class L2CAP_Credit_Based_Connection_Response(L2CAP_Control_Frame):
+    '''
+    See Bluetooth spec @ Vol 3, Part A - 4.26 L2CAP_CREDIT_BASED_CONNECTION_RSP (0x18).
+    '''
+
+    class Result(hci.SpecableEnum):
+        ALL_CONNECTIONS_SUCCESSFUL = 0x0000
+        ALL_CONNECTIONS_REFUSED_SPSM_NOT_SUPPORTED = 0x0002
+        SOME_CONNECTIONS_REFUSED_INSUFFICIENT_RESOURCES_AVAILABLE = 0x0004
+        ALL_CONNECTIONS_REFUSED_INSUFFICIENT_AUTHENTICATION = 0x0005
+        ALL_CONNECTIONS_REFUSED_INSUFFICIENT_AUTHORIZATION = 0x0006
+        ALL_CONNECTIONS_REFUSED_ENCRYPTION_KEY_SIZE_TOO_SHORT = 0x0007
+        ALL_CONNECTIONS_REFUSED_INSUFFICIENT_ENCRYPTION = 0x0008
+        SOME_CONNECTIONS_REFUSED_INVALID_SOURCE_CID = 0x0009
+        SOME_CONNECTIONS_REFUSED_SOURCE_CID_ALREADY_ALLOCATED = 0x000A
+        ALL_CONNECTIONS_REFUSED_UNACCEPTABLE_PARAMETERS = 0x000B
+        ALL_CONNECTIONS_REFUSED_INVALID_PARAMETERS = 0x000C
+        ALL_CONNECTIONS_PENDING_NO_FURTHER_INFORMATION_AVAILABLE = 0x000D
+        ALL_CONNECTIONS_PENDING_AUTHENTICATION_PENDING = 0x000E
+        ALL_CONNECTIONS_PENDING_AUTHORIZATION_PENDING = 0x000F
+
+    mtu: int = dataclasses.field(metadata=hci.metadata(2))
+    mps: int = dataclasses.field(metadata=hci.metadata(2))
+    initial_credits: int = dataclasses.field(metadata=hci.metadata(2))
+    result: int = dataclasses.field(metadata=Result.type_metadata(2))
+    destination_cid: Sequence[int] = dataclasses.field(
+        metadata=L2CAP_Credit_Based_Connection_Request.CID_METADATA
+    )
+
+
+# -----------------------------------------------------------------------------
+@L2CAP_Control_Frame.subclass
+@dataclasses.dataclass
+class L2CAP_Credit_Based_Reconfigure_Request(L2CAP_Control_Frame):
+    '''
+    See Bluetooth spec @ Vol 3, Part A - 4.27 L2CAP_CREDIT_BASED_RECONFIGURE_REQ (0x19).
+    '''
+
+    mtu: int = dataclasses.field(metadata=hci.metadata(2))
+    mps: int = dataclasses.field(metadata=hci.metadata(2))
+    destination_cid: Sequence[int] = dataclasses.field(
+        metadata=L2CAP_Credit_Based_Connection_Request.CID_METADATA
+    )
+
+
+# -----------------------------------------------------------------------------
+@L2CAP_Control_Frame.subclass
+@dataclasses.dataclass
+class L2CAP_Credit_Based_Reconfigure_Response(L2CAP_Control_Frame):
+    '''
+    See Bluetooth spec @ Vol 3, Part A - 4.28 L2CAP_CREDIT_BASED_RECONFIGURE_RSP (0x1A).
+    '''
+
+    class Result(hci.SpecableEnum):
+        RECONFIGURATION_SUCCESSFUL = 0x0000
+        RECONFIGURATION_FAILED_REDUCTION_IN_SIZE_OF_MTU_NOT_ALLOWED = 0x0001
+        RECONFIGURATION_FAILED_REDUCTION_IN_SIZE_OF_MPS_NOT_ALLOWED_FOR_MORE_THAN_ONE_CHANNEL_AT_A_TIME = (
+            0x0002
+        )
+        RECONFIGURATION_FAILED_ONE_OR_MORE_DESTINATION_CIDS_INVALID = 0x0003
+        RECONFIGURATION_FAILED_OTHER_UNACCEPTABLE_PARAMETERS = 0x0004
+
+    result: int = dataclasses.field(metadata=Result.type_metadata(2))
 
 
 # -----------------------------------------------------------------------------
@@ -1424,16 +1531,6 @@ class ChannelManager:
         if cid in self.fixed_channels:
             del self.fixed_channels[cid]
 
-    @utils.deprecated("Please use create_classic_server")
-    def register_server(
-        self,
-        psm: int,
-        server: Callable[[ClassicChannel], Any],
-    ) -> int:
-        return self.create_classic_server(
-            handler=server, spec=ClassicChannelSpec(psm=psm)
-        ).psm
-
     def create_classic_server(
         self,
         spec: ClassicChannelSpec,
@@ -1469,22 +1566,6 @@ class ChannelManager:
         self.servers[spec.psm] = ClassicChannelServer(self, spec.psm, handler, spec.mtu)
 
         return self.servers[spec.psm]
-
-    @utils.deprecated("Please use create_le_credit_based_server()")
-    def register_le_coc_server(
-        self,
-        psm: int,
-        server: Callable[[LeCreditBasedChannel], Any],
-        max_credits: int,
-        mtu: int,
-        mps: int,
-    ) -> int:
-        return self.create_le_credit_based_server(
-            spec=LeCreditBasedChannelSpec(
-                psm=None if psm == 0 else psm, mtu=mtu, mps=mps, max_credits=max_credits
-            ),
-            handler=server,
-        ).psm
 
     def create_le_credit_based_server(
         self,
@@ -1587,8 +1668,8 @@ class ChannelManager:
         if handler:
             try:
                 handler(connection, cid, control_frame)
-            except Exception as error:
-                logger.warning(f'{color("!!! Exception in handler:", "red")} {error}')
+            except Exception:
+                logger.exception(color("!!! Exception in handler:", "red"))
                 self.send_control_frame(
                     connection,
                     cid,
@@ -1598,7 +1679,7 @@ class ChannelManager:
                         data=b'',
                     ),
                 )
-                raise error
+                raise
         else:
             logger.error(color('Channel Manager command not handled???', 'red'))
             self.send_control_frame(
@@ -2038,17 +2119,6 @@ class ChannelManager:
             if channel.source_cid in connection_channels:
                 del connection_channels[channel.source_cid]
 
-    @utils.deprecated("Please use create_le_credit_based_channel()")
-    async def open_le_coc(
-        self, connection: Connection, psm: int, max_credits: int, mtu: int, mps: int
-    ) -> LeCreditBasedChannel:
-        return await self.create_le_credit_based_channel(
-            connection=connection,
-            spec=LeCreditBasedChannelSpec(
-                psm=psm, max_credits=max_credits, mtu=mtu, mps=mps
-            ),
-        )
-
     async def create_le_credit_based_channel(
         self,
         connection: Connection,
@@ -2084,8 +2154,8 @@ class ChannelManager:
         # Connect
         try:
             await channel.connect()
-        except Exception as error:
-            logger.warning(f'connection failed: {error}')
+        except Exception:
+            logger.exception('connection failed')
             del connection_channels[source_cid]
             raise
 
@@ -2094,12 +2164,6 @@ class ChannelManager:
         le_connection_channels[channel.destination_cid] = channel
 
         return channel
-
-    @utils.deprecated("Please use create_classic_channel()")
-    async def connect(self, connection: Connection, psm: int) -> ClassicChannel:
-        return await self.create_classic_channel(
-            connection=connection, spec=ClassicChannelSpec(psm=psm)
-        )
 
     async def create_classic_channel(
         self, connection: Connection, spec: ClassicChannelSpec
@@ -2137,20 +2201,3 @@ class ChannelManager:
             raise e
 
         return channel
-
-
-# -----------------------------------------------------------------------------
-# Deprecated Classes
-# -----------------------------------------------------------------------------
-
-
-class Channel(ClassicChannel):
-    @utils.deprecated("Please use ClassicChannel")
-    def __init__(self, *args, **kwargs) -> None:
-        super().__init__(*args, **kwargs)
-
-
-class LeConnectionOrientedChannel(LeCreditBasedChannel):
-    @utils.deprecated("Please use LeCreditBasedChannel")
-    def __init__(self, *args, **kwargs) -> None:
-        super().__init__(*args, **kwargs)

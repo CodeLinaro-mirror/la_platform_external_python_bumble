@@ -17,20 +17,16 @@
 # -----------------------------------------------------------------------------
 from __future__ import annotations
 
-import asyncio
 import abc
-from concurrent.futures import ThreadPoolExecutor
+import asyncio
 import dataclasses
 import enum
 import logging
 import pathlib
-from typing import (
-    AsyncGenerator,
-    BinaryIO,
-    TYPE_CHECKING,
-)
 import sys
 import wave
+from concurrent.futures import ThreadPoolExecutor
+from typing import TYPE_CHECKING, AsyncGenerator, BinaryIO
 
 from bumble.colors import color
 
@@ -230,8 +226,8 @@ class SoundDeviceAudioOutput(ThreadedAudioOutput):
 
         try:
             self._stream.write(pcm_samples)
-        except Exception as error:
-            print(f'Sound device error: {error}')
+        except Exception:
+            logger.exception('Sound device error')
             raise
 
     def _close(self):

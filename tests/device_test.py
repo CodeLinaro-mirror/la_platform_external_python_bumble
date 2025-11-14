@@ -20,12 +20,11 @@ import functools
 import logging
 import os
 from unittest import mock
+
 import pytest
 
-from bumble.core import (
-    PhysicalTransport,
-    ConnectionParameters,
-)
+from bumble import device, gatt, hci, utils
+from bumble.core import PhysicalTransport
 from bumble.device import (
     AdvertisingEventProperties,
     AdvertisingParameters,
@@ -35,27 +34,23 @@ from bumble.device import (
     Device,
     PeriodicAdvertisingParameters,
 )
-from bumble.host import DataPacketQueue, Host
-from bumble import device
-from bumble import hci
 from bumble.hci import (
     HCI_ACCEPT_CONNECTION_REQUEST_COMMAND,
     HCI_COMMAND_STATUS_PENDING,
+    HCI_CONNECTION_FAILED_TO_BE_ESTABLISHED_ERROR,
     HCI_CREATE_CONNECTION_COMMAND,
     HCI_SUCCESS,
-    HCI_CONNECTION_FAILED_TO_BE_ESTABLISHED_ERROR,
     Address,
-    OwnAddressType,
-    Role,
     HCI_Command_Complete_Event,
     HCI_Command_Status_Event,
     HCI_Connection_Complete_Event,
     HCI_Connection_Request_Event,
     HCI_Error,
     HCI_Packet,
+    OwnAddressType,
+    Role,
 )
-from bumble import utils
-from bumble import gatt
+from bumble.host import DataPacketQueue, Host
 
 from .test_utils import TwoDevices, async_barrier
 
@@ -294,14 +289,15 @@ async def test_legacy_advertising_disconnection(auto_restart):
     await device.power_on()
     peer_address = Address('F0:F1:F2:F3:F4:F5')
     await device.start_advertising(auto_restart=auto_restart)
-    device.on_connection(
+    device.on_le_connection(
         0x0001,
-        PhysicalTransport.LE,
         peer_address,
         None,
         None,
         Role.PERIPHERAL,
-        ConnectionParameters(0, 0, 0),
+        0,
+        0,
+        0,
     )
 
     device.on_advertising_set_termination(
@@ -352,14 +348,15 @@ async def test_extended_advertising_connection(own_address_type):
     advertising_set = await device.create_advertising_set(
         advertising_parameters=AdvertisingParameters(own_address_type=own_address_type)
     )
-    device.on_connection(
+    device.on_le_connection(
         0x0001,
-        PhysicalTransport.LE,
         peer_address,
         None,
         None,
         Role.PERIPHERAL,
-        ConnectionParameters(0, 0, 0),
+        0,
+        0,
+        0,
     )
     device.on_advertising_set_termination(
         HCI_SUCCESS,
@@ -396,14 +393,15 @@ async def test_extended_advertising_connection_out_of_order(own_address_type):
         0x0001,
         0,
     )
-    device.on_connection(
+    device.on_le_connection(
         0x0001,
-        PhysicalTransport.LE,
         Address('F0:F1:F2:F3:F4:F5'),
         None,
         None,
         Role.PERIPHERAL,
-        ConnectionParameters(0, 0, 0),
+        0,
+        0,
+        0,
     )
 
     if own_address_type == OwnAddressType.PUBLIC:
@@ -761,6 +759,34 @@ async def test_inquiry_result_with_rssi():
         )
     )
     m.assert_called_with(hci.Address("00:11:22:33:44:55/P"), 3, mock.ANY, 5)
+
+
+# -----------------------------------------------------------------------------
+@pytest.mark.parametrize(
+    "roles",
+    (
+        (hci.Role.PERIPHERAL, hci.Role.CENTRAL),
+        (hci.Role.CENTRAL, hci.Role.PERIPHERAL),
+    ),
+)
+@pytest.mark.asyncio
+async def test_accept_classic_connection(roles: tuple[hci.Role, hci.Role]):
+    devices = TwoDevices()
+    devices[0].classic_enabled = True
+    devices[1].classic_enabled = True
+    await devices[0].power_on()
+    await devices[1].power_on()
+
+    accept_task = asyncio.create_task(devices[1].accept(role=roles[1]))
+    await devices[0].connect(
+        devices[1].public_address, transport=PhysicalTransport.BR_EDR
+    )
+    await accept_task
+
+    assert devices.connections[0]
+    assert devices.connections[0].role == roles[0]
+    assert devices.connections[1]
+    assert devices.connections[1].role == roles[1]
 
 
 # -----------------------------------------------------------------------------

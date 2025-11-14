@@ -15,18 +15,14 @@
 # -----------------------------------------------------------------------------
 # Imports
 # -----------------------------------------------------------------------------
-from contextlib import asynccontextmanager
 import logging
 import os
+import re
 from typing import Optional
 
 from bumble import utils
-from bumble.transport.common import (
-    Transport,
-    SnoopingTransport,
-    TransportSpecError,
-)
 from bumble.snoop import create_snooper
+from bumble.transport.common import SnoopingTransport, Transport, TransportSpecError
 
 # -----------------------------------------------------------------------------
 # Logging
@@ -48,8 +44,8 @@ def _wrap_transport(transport: Transport) -> Transport:
             return SnoopingTransport.create_with(
                 transport, create_snooper(snooper_spec)
             )
-        except Exception as exc:
-            logger.warning(f'Exception while creating snooper: {exc}')
+        except Exception:
+            logger.exception('Exception while creating snooper')
 
     return transport
 
@@ -88,12 +84,19 @@ async def open_transport(name: str) -> Transport:
     scheme, *tail = name.split(':', 1)
     spec = tail[0] if tail else None
     metadata = None
-    if spec:
-        # Metadata may precede the spec
-        if spec.startswith('['):
-            metadata_str, *tail = spec[1:].split(']')
-            spec = tail[0] if tail else None
-            metadata = dict([entry.split('=') for entry in metadata_str.split(',')])
+    # If a spec is provided, check for a metadata section in square brackets.
+    # The regex captures a comma-separated list of key=value pairs (allowing an
+    # optional trailing comma). The key is matched by \w+ and the value by [^,\]]+,
+    # meaning the value may contain any character except a comma or a closing
+    # bracket (']').
+    if spec and (m := re.search(r'\[(\w+=[^,\]]+(?:,\w+=[^,\]]+)*,?)\]', spec)):
+        metadata_str = m.group(1)
+        if m.start() == 0:
+            # <metadata><spec>
+            spec = spec[m.end() :]
+        else:
+            spec = spec[: m.start()]
+        metadata = dict([entry.split('=') for entry in metadata_str.split(',')])
 
     transport = await _open_transport(scheme, spec)
     if metadata:
@@ -185,11 +188,17 @@ async def _open_transport(scheme: str, spec: Optional[str]) -> Transport:
 
         return await open_android_netsim_transport(spec)
 
-    if scheme == 'unix':
+    if scheme in ('unix', 'unix-client'):
         from bumble.transport.unix import open_unix_client_transport
 
         assert spec
         return await open_unix_client_transport(spec)
+
+    if scheme == 'unix-server':
+        from bumble.transport.unix import open_unix_server_transport
+
+        assert spec
+        return await open_unix_server_transport(spec)
 
     raise TransportSpecError('unknown transport scheme')
 

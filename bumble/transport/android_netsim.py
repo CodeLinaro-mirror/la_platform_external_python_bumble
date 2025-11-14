@@ -29,28 +29,27 @@ import grpc.aio
 import bumble
 from bumble.transport.common import (
     ParserSource,
-    PumpedTransport,
-    PumpedPacketSource,
     PumpedPacketSink,
+    PumpedPacketSource,
+    PumpedTransport,
     Transport,
-    TransportSpecError,
     TransportInitError,
+    TransportSpecError,
 )
 
 # pylint: disable=no-name-in-module
-from bumble.transport.grpc_protobuf.netsim.packet_streamer_pb2_grpc import (
-    PacketStreamerStub,
-    PacketStreamerServicer,
-    add_PacketStreamerServicer_to_server,
-)
+from bumble.transport.grpc_protobuf.netsim.common_pb2 import ChipKind
+from bumble.transport.grpc_protobuf.netsim.hci_packet_pb2 import HCIPacket
 from bumble.transport.grpc_protobuf.netsim.packet_streamer_pb2 import (
     PacketRequest,
     PacketResponse,
 )
-from bumble.transport.grpc_protobuf.netsim.hci_packet_pb2 import HCIPacket
+from bumble.transport.grpc_protobuf.netsim.packet_streamer_pb2_grpc import (
+    PacketStreamerServicer,
+    PacketStreamerStub,
+    add_PacketStreamerServicer_to_server,
+)
 from bumble.transport.grpc_protobuf.netsim.startup_pb2 import Chip, ChipInfo, DeviceInfo
-from bumble.transport.grpc_protobuf.netsim.common_pb2 import ChipKind
-
 
 # -----------------------------------------------------------------------------
 # Logging
@@ -132,7 +131,11 @@ def publish_grpc_port(grpc_port: int, instance_number: int) -> bool:
 
         def cleanup():
             logger.debug("removing .ini file")
-            ini_file.unlink()
+            try:
+                ini_file.unlink()
+            except OSError as error:
+                # Don't log at exception level, since this may happen normally.
+                logger.debug(f'failed to remove .ini file ({error})')
 
         atexit.register(cleanup)
         return True
@@ -145,8 +148,6 @@ def publish_grpc_port(grpc_port: int, instance_number: int) -> bool:
 async def open_android_netsim_controller_transport(
     server_host: Optional[str], server_port: int, options: dict[str, str]
 ) -> Transport:
-    if not server_port:
-        raise TransportSpecError('invalid port')
     if server_host == '_' or not server_host:
         server_host = 'localhost'
 
@@ -168,14 +169,16 @@ async def open_android_netsim_controller_transport(
                 await self.pump_loop()
             except asyncio.CancelledError:
                 logger.debug('Pump task canceled')
-                self.done.set_result(None)
+                if not self.done.done():
+                    self.done.set_result(None)
 
         async def pump_loop(self):
             while True:
                 request = await self.context.read()
                 if request == grpc.aio.EOF:
                     logger.debug('End of request stream')
-                    self.done.set_result(None)
+                    if not self.done.done():
+                        self.done.set_result(None)
                     return
 
                 # If we're not initialized yet, wait for a init packet.
@@ -220,6 +223,8 @@ async def open_android_netsim_controller_transport(
         async def wait_for_termination(self):
             await self.done
 
+    server_address = f'{server_host}:{server_port}'
+
     class Server(PacketStreamerServicer, ParserSource):
         def __init__(self):
             PacketStreamerServicer.__init__(self)
@@ -230,8 +235,8 @@ async def open_android_netsim_controller_transport(
             # a server listening on that port, we get an exception.
             self.grpc_server = grpc.aio.server(options=(('grpc.so_reuseport', 0),))
             add_PacketStreamerServicer_to_server(self, self.grpc_server)
-            self.grpc_server.add_insecure_port(f'{server_host}:{server_port}')
-            logger.debug(f'gRPC server listening on {server_host}:{server_port}')
+            self.port = self.grpc_server.add_insecure_port(server_address)
+            logger.debug('gRPC server listening on %s', server_address)
 
         async def start(self):
             logger.debug('Starting gRPC server')
@@ -443,7 +448,7 @@ async def open_android_netsim_transport(spec: Optional[str]) -> Transport:
     params = spec.split(',') if spec else []
     if params and ':' in params[0]:
         # Explicit <host>:<port>
-        host, port_str = params[0].split(':')
+        host, port_str = params[0].rsplit(':', maxsplit=1)
         port = int(port_str)
         params_offset = 1
     else:

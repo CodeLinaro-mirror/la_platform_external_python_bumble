@@ -16,42 +16,44 @@
 # Imports
 # -----------------------------------------------------------------------------
 import asyncio
-import os
 import logging
+import os
 import struct
 
 import click
 from prompt_toolkit.shortcuts import PromptSession
 
+from bumble import data_types
 from bumble.a2dp import make_audio_sink_service_sdp_records
+from bumble.att import (
+    ATT_INSUFFICIENT_AUTHENTICATION_ERROR,
+    ATT_INSUFFICIENT_ENCRYPTION_ERROR,
+    ATT_Error,
+)
 from bumble.colors import color
-from bumble.device import Device, Peer
-from bumble.transport import open_transport
-from bumble.pairing import OobData, PairingDelegate, PairingConfig
-from bumble.smp import OobContext, OobLegacyContext
-from bumble.smp import error_name as smp_error_name
-from bumble.keys import JsonKeyStore
 from bumble.core import (
+    UUID,
     AdvertisingData,
     Appearance,
-    ProtocolError,
+    DataType,
     PhysicalTransport,
-    UUID,
+    ProtocolError,
 )
+from bumble.device import Device, Peer
 from bumble.gatt import (
     GATT_DEVICE_NAME_CHARACTERISTIC,
     GATT_GENERIC_ACCESS_SERVICE,
-    GATT_HEART_RATE_SERVICE,
     GATT_HEART_RATE_MEASUREMENT_CHARACTERISTIC,
-    Service,
+    GATT_HEART_RATE_SERVICE,
     Characteristic,
+    Service,
 )
 from bumble.hci import OwnAddressType
-from bumble.att import (
-    ATT_Error,
-    ATT_INSUFFICIENT_AUTHENTICATION_ERROR,
-    ATT_INSUFFICIENT_ENCRYPTION_ERROR,
-)
+from bumble.keys import JsonKeyStore
+from bumble.pairing import OobData, PairingConfig, PairingDelegate
+from bumble.smp import OobContext, OobLegacyContext
+from bumble.smp import error_name as smp_error_name
+from bumble.transport import open_transport
 from bumble.utils import AsyncRunner
 
 # -----------------------------------------------------------------------------
@@ -506,33 +508,21 @@ async def pair(
                 if mode == 'dual':
                     flags |= AdvertisingData.Flags.SIMULTANEOUS_LE_BR_EDR_CAPABLE
 
-                ad_structs = [
-                    (
-                        AdvertisingData.FLAGS,
-                        bytes([flags]),
-                    ),
-                    (AdvertisingData.COMPLETE_LOCAL_NAME, 'Bumble'.encode()),
+                advertising_data_types: list[DataType] = [
+                    data_types.Flags(flags),
+                    data_types.CompleteLocalName('Bumble'),
                 ]
                 if service_uuids_16:
-                    ad_structs.append(
-                        (
-                            AdvertisingData.INCOMPLETE_LIST_OF_16_BIT_SERVICE_CLASS_UUIDS,
-                            b"".join(bytes(uuid) for uuid in service_uuids_16),
-                        )
+                    advertising_data_types.append(
+                        data_types.IncompleteListOf16BitServiceUUIDs(service_uuids_16)
                     )
                 if service_uuids_32:
-                    ad_structs.append(
-                        (
-                            AdvertisingData.INCOMPLETE_LIST_OF_32_BIT_SERVICE_CLASS_UUIDS,
-                            b"".join(bytes(uuid) for uuid in service_uuids_32),
-                        )
+                    advertising_data_types.append(
+                        data_types.IncompleteListOf32BitServiceUUIDs(service_uuids_32)
                     )
                 if service_uuids_128:
-                    ad_structs.append(
-                        (
-                            AdvertisingData.INCOMPLETE_LIST_OF_128_BIT_SERVICE_CLASS_UUIDS,
-                            b"".join(bytes(uuid) for uuid in service_uuids_128),
-                        )
+                    advertising_data_types.append(
+                        data_types.IncompleteListOf128BitServiceUUIDs(service_uuids_128)
                     )
 
                 if advertise_appearance:
@@ -559,13 +549,10 @@ async def pair(
                         advertise_appearance_int = int(
                             Appearance(category_enum, subcategory_enum)
                         )
-                    ad_structs.append(
-                        (
-                            AdvertisingData.APPEARANCE,
-                            struct.pack('<H', advertise_appearance_int),
-                        )
+                    advertising_data_types.append(
+                        data_types.Appearance(category_enum, subcategory_enum)
                     )
-                device.advertising_data = bytes(AdvertisingData(ad_structs))
+                device.advertising_data = bytes(AdvertisingData(advertising_data_types))
                 await device.start_advertising(
                     auto_restart=True,
                     own_address_type=(

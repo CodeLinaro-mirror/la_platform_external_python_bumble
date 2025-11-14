@@ -16,56 +16,59 @@
 # Imports
 # -----------------------------------------------------------------------------
 from __future__ import annotations
+
 import asyncio
 import enum
 import logging
 import os
 import struct
-import pytest
 from typing import Any
-from typing_extensions import Self
-from unittest.mock import AsyncMock, Mock, ANY
+from unittest.mock import ANY, AsyncMock, Mock
 
-from bumble.controller import Controller
-from bumble.link import LocalLink
-from bumble.device import Device, Peer
-from bumble.host import Host
-from bumble.gatt import (
-    GATT_BATTERY_LEVEL_CHARACTERISTIC,
-    GATT_CLIENT_CHARACTERISTIC_CONFIGURATION_DESCRIPTOR,
-    Service,
-    Characteristic,
-    CharacteristicValue,
-    Descriptor,
-)
-from bumble.gatt_client import CharacteristicProxy
-from bumble.gatt_adapters import (
-    CharacteristicProxyAdapter,
-    SerializableCharacteristicAdapter,
-    SerializableCharacteristicProxyAdapter,
-    DelegatedCharacteristicAdapter,
-    DelegatedCharacteristicProxyAdapter,
-    PackedCharacteristicAdapter,
-    PackedCharacteristicProxyAdapter,
-    MappedCharacteristicAdapter,
-    MappedCharacteristicProxyAdapter,
-    UTF8CharacteristicAdapter,
-    UTF8CharacteristicProxyAdapter,
-    EnumCharacteristicAdapter,
-    EnumCharacteristicProxyAdapter,
-)
-from bumble.transport.common import AsyncPipeSink
-from bumble.core import UUID
+import pytest
+from typing_extensions import Self
+
 from bumble.att import (
-    Attribute,
-    ATT_EXCHANGE_MTU_REQUEST,
     ATT_ATTRIBUTE_NOT_FOUND_ERROR,
     ATT_PDU,
     ATT_Error,
     ATT_Error_Response,
     ATT_Read_By_Group_Type_Request,
+    Attribute,
     ErrorCode,
+    Opcode,
 )
+from bumble.controller import Controller
+from bumble.core import UUID
+from bumble.device import Device, Peer
+from bumble.gatt import (
+    GATT_BATTERY_LEVEL_CHARACTERISTIC,
+    GATT_CLIENT_CHARACTERISTIC_CONFIGURATION_DESCRIPTOR,
+    Characteristic,
+    CharacteristicValue,
+    Descriptor,
+    Service,
+)
+from bumble.gatt_adapters import (
+    CharacteristicProxyAdapter,
+    DelegatedCharacteristicAdapter,
+    DelegatedCharacteristicProxyAdapter,
+    EnumCharacteristicAdapter,
+    EnumCharacteristicProxyAdapter,
+    MappedCharacteristicAdapter,
+    MappedCharacteristicProxyAdapter,
+    PackedCharacteristicAdapter,
+    PackedCharacteristicProxyAdapter,
+    SerializableCharacteristicAdapter,
+    SerializableCharacteristicProxyAdapter,
+    UTF8CharacteristicAdapter,
+    UTF8CharacteristicProxyAdapter,
+)
+from bumble.gatt_client import CharacteristicProxy
+from bumble.host import Host
+from bumble.link import LocalLink
+from bumble.transport.common import AsyncPipeSink
+
 from .test_utils import async_barrier
 
 
@@ -103,7 +106,7 @@ def test_UUID():
 # -----------------------------------------------------------------------------
 def test_ATT_Error_Response():
     pdu = ATT_Error_Response(
-        request_opcode_in_error=ATT_EXCHANGE_MTU_REQUEST,
+        request_opcode_in_error=Opcode.ATT_EXCHANGE_MTU_REQUEST,
         attribute_handle_in_error=0x0000,
         error_code=ATT_ATTRIBUTE_NOT_FOUND_ERROR,
     )

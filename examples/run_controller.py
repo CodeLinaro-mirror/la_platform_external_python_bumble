@@ -18,6 +18,10 @@
 import asyncio
 import sys
 
+import bumble.logging
+from bumble import hci
+from bumble.controller import Controller
+from bumble.device import Device
 from bumble.gatt import (
     GATT_CHARACTERISTIC_USER_DESCRIPTION_DESCRIPTOR,
     GATT_DEVICE_INFORMATION_SERVICE,
@@ -26,12 +30,9 @@ from bumble.gatt import (
     Descriptor,
     Service,
 )
-from bumble.device import Device
 from bumble.host import Host
-from bumble.controller import Controller
 from bumble.link import LocalLink
 from bumble.transport import open_transport
-import bumble.logging
 
 
 # -----------------------------------------------------------------------------
@@ -61,7 +62,7 @@ async def main() -> None:
             host_sink=hci_transport.sink,
             link=link,
         )
-        controller1.random_address = sys.argv[1]
+        controller1.random_address = hci.Address(sys.argv[1])
 
         # Create a second controller using the same link
         controller2 = Controller('C2', link=link)

@@ -16,21 +16,19 @@
 # Imports
 # -----------------------------------------------------------------------------
 from __future__ import annotations
-from dataclasses import dataclass
-import logging
-import enum
-import struct
 
+import enum
+import logging
+import struct
 from abc import ABC, abstractmethod
-from typing import Optional, Callable
+from dataclasses import dataclass
+from typing import Callable, Optional
+
 from typing_extensions import override
 
-from bumble import l2cap
-from bumble import device
-from bumble import utils
+from bumble import device, l2cap, utils
 from bumble.core import InvalidStateError, ProtocolError
 from bumble.hci import Address
-
 
 # -----------------------------------------------------------------------------
 # Logging
@@ -219,33 +217,41 @@ class HID(ABC, utils.EventEmitter):
         self.role = role
 
         # Register ourselves with the L2CAP channel manager
-        device.register_l2cap_server(HID_CONTROL_PSM, self.on_l2cap_connection)
-        device.register_l2cap_server(HID_INTERRUPT_PSM, self.on_l2cap_connection)
+        device.create_l2cap_server(
+            l2cap.ClassicChannelSpec(HID_CONTROL_PSM), self.on_l2cap_connection
+        )
+        device.create_l2cap_server(
+            l2cap.ClassicChannelSpec(HID_INTERRUPT_PSM), self.on_l2cap_connection
+        )
 
         device.on(device.EVENT_CONNECTION, self.on_device_connection)
 
     async def connect_control_channel(self) -> None:
+        if not self.connection:
+            raise InvalidStateError("Connection is not established!")
         # Create a new L2CAP connection - control channel
         try:
-            channel = await self.device.l2cap_channel_manager.connect(
-                self.connection, HID_CONTROL_PSM
+            channel = await self.connection.create_l2cap_channel(
+                l2cap.ClassicChannelSpec(HID_CONTROL_PSM)
             )
             channel.sink = self.on_ctrl_pdu
             self.l2cap_ctrl_channel = channel
         except ProtocolError:
-            logging.exception(f'L2CAP connection failed.')
+            logging.exception('L2CAP connection failed.')
             raise
 
     async def connect_interrupt_channel(self) -> None:
+        if not self.connection:
+            raise InvalidStateError("Connection is not established!")
         # Create a new L2CAP connection - interrupt channel
         try:
-            channel = await self.device.l2cap_channel_manager.connect(
-                self.connection, HID_INTERRUPT_PSM
+            channel = await self.connection.create_l2cap_channel(
+                l2cap.ClassicChannelSpec(HID_INTERRUPT_PSM)
             )
             channel.sink = self.on_intr_pdu
             self.l2cap_intr_channel = channel
         except ProtocolError:
-            logging.exception(f'L2CAP connection failed.')
+            logging.exception('L2CAP connection failed.')
             raise
 
     async def disconnect_interrupt_channel(self) -> None:
