@@ -16,18 +16,18 @@
 # Imports
 # -----------------------------------------------------------------------------
 from __future__ import annotations
+
 import asyncio
-import logging
-import threading
 import ctypes
+import logging
 import platform
+import threading
 
 import usb1
 
-from bumble.transport.common import Transport, BaseSource, TransportInitError
 from bumble import hci
 from bumble.colors import color
-
+from bumble.transport.common import BaseSource, Transport, TransportInitError
 
 # -----------------------------------------------------------------------------
 # Logging
@@ -292,9 +292,9 @@ async def open_usb_transport(spec: str) -> Transport:
                 if self.sink:
                     try:
                         self.sink.on_packet(packet)
-                    except Exception as error:
+                    except Exception:
                         logger.exception(
-                            color(f'!!! Exception in sink.on_packet: {error}', 'red')
+                            color('!!! Exception in sink.on_packet', 'red')
                         )
 
         def close(self):

@@ -16,27 +16,26 @@
 # Imports
 # -----------------------------------------------------------------------------
 import logging
-import grpc.aio
-
 from typing import Optional, Union
 
+import grpc.aio
+
 from bumble.transport.common import (
-    PumpedTransport,
-    PumpedPacketSource,
     PumpedPacketSink,
+    PumpedPacketSource,
+    PumpedTransport,
     Transport,
     TransportSpecError,
 )
 
 # pylint: disable=no-name-in-module
+from bumble.transport.grpc_protobuf.emulated_bluetooth_packets_pb2 import HCIPacket
 from bumble.transport.grpc_protobuf.emulated_bluetooth_pb2_grpc import (
     EmulatedBluetoothServiceStub,
 )
-from bumble.transport.grpc_protobuf.emulated_bluetooth_packets_pb2 import HCIPacket
 from bumble.transport.grpc_protobuf.emulated_bluetooth_vhci_pb2_grpc import (
     VhciForwardingServiceStub,
 )
-
 
 # -----------------------------------------------------------------------------
 # Logging
@@ -77,21 +76,17 @@ async def open_android_emulator_transport(spec: Optional[str]) -> Transport:
 
     # Parse the parameters
     mode = 'host'
-    server_host = 'localhost'
-    server_port = '8554'
+    server_address = 'localhost:8554'
     if spec:
         params = spec.split(',')
         for param in params:
             if param.startswith('mode='):
                 mode = param.split('=')[1]
-            elif ':' in param:
-                server_host, server_port = param.split(':')
             else:
-                raise TransportSpecError('invalid parameter')
+                server_address = param
 
     # Connect to the gRPC server
-    server_address = f'{server_host}:{server_port}'
-    logger.debug(f'connecting to gRPC server at {server_address}')
+    logger.debug('connecting to gRPC server at %s', server_address)
     channel = grpc.aio.insecure_channel(server_address)
 
     service: Union[EmulatedBluetoothServiceStub, VhciForwardingServiceStub]
