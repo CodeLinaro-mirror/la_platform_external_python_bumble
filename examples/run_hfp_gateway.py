@@ -20,7 +20,7 @@ import io
 import json
 import logging
 import sys
-from typing import Iterable, Optional
+from collections.abc import Iterable
 
 import websockets.asyncio.server
 
@@ -33,9 +33,9 @@ from bumble.transport import open_transport
 
 logger = logging.getLogger(__name__)
 
-ws: Optional[websockets.asyncio.server.ServerConnection] = None
-ag_protocol: Optional[hfp.AgProtocol] = None
-source_file: Optional[io.BufferedReader] = None
+ws: websockets.asyncio.server.ServerConnection | None = None
+ag_protocol: hfp.AgProtocol | None = None
+source_file: io.BufferedReader | None = None
 
 
 def _default_configuration() -> hfp.AgConfiguration:
@@ -100,13 +100,9 @@ def on_sco_packet(packet: hci.HCI_SynchronousDataPacket):
     if source_file and (pcm_data := source_file.read(packet.data_total_length)):
         assert ag_protocol
         host = ag_protocol.dlc.multiplexer.l2cap_channel.connection.device.host
-        host.send_hci_packet(
-            hci.HCI_SynchronousDataPacket(
-                connection_handle=packet.connection_handle,
-                packet_status=0,
-                data_total_length=len(pcm_data),
-                data=pcm_data,
-            )
+        host.send_sco_sdu(
+            connection_handle=packet.connection_handle,
+            sdu=pcm_data,
         )
 
 

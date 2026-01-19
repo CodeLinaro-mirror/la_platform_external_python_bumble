@@ -19,7 +19,6 @@ import asyncio
 import json
 import secrets
 import sys
-from typing import Optional
 
 import websockets.asyncio.server
 
@@ -57,7 +56,7 @@ def dumps_volume_state(volume_setting: int, muted: int, change_counter: int) -> 
 # -----------------------------------------------------------------------------
 async def main() -> None:
     if len(sys.argv) < 3:
-        print('Usage: run_vcp_renderer.py <config-file>' '<transport-spec-for-device>')
+        print('Usage: run_vcp_renderer.py <config-file><transport-spec-for-device>')
         return
 
     print('<<< connecting to HCI...')
@@ -110,7 +109,7 @@ async def main() -> None:
         vcs = VolumeControlService()
         device.add_service(vcs)
 
-        ws: Optional[websockets.asyncio.server.ServerConnection] = None
+        ws: websockets.asyncio.server.ServerConnection | None = None
 
         def on_volume_state_change():
             if ws:

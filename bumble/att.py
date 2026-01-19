@@ -29,18 +29,18 @@ import enum
 import functools
 import inspect
 import struct
+from collections.abc import Awaitable, Callable, Sequence
 from typing import (
     TYPE_CHECKING,
-    Awaitable,
-    Callable,
     ClassVar,
     Generic,
-    Optional,
+    TypeAlias,
     TypeVar,
-    Union,
 )
 
-from bumble import hci, utils
+from typing_extensions import TypeIs
+
+from bumble import hci, l2cap, utils
 from bumble.colors import color
 from bumble.core import UUID, InvalidOperationError, ProtocolError
 from bumble.hci import HCI_Object
@@ -53,6 +53,14 @@ if TYPE_CHECKING:
 
 _T = TypeVar('_T')
 
+Bearer: TypeAlias = "Connection | l2cap.LeCreditBasedChannel"
+EnhancedBearer: TypeAlias = l2cap.LeCreditBasedChannel
+
+
+def is_enhanced_bearer(bearer: Bearer) -> TypeIs[EnhancedBearer]:
+    return isinstance(bearer, EnhancedBearer)
+
+
 # -----------------------------------------------------------------------------
 # Constants
 # -----------------------------------------------------------------------------
@@ -61,36 +69,39 @@ _T = TypeVar('_T')
 
 ATT_CID = 0x04
 ATT_PSM = 0x001F
+EATT_PSM = 0x0027
 
 class Opcode(hci.SpecableEnum):
-    ATT_ERROR_RESPONSE              = 0x01
-    ATT_EXCHANGE_MTU_REQUEST        = 0x02
-    ATT_EXCHANGE_MTU_RESPONSE       = 0x03
-    ATT_FIND_INFORMATION_REQUEST    = 0x04
-    ATT_FIND_INFORMATION_RESPONSE   = 0x05
-    ATT_FIND_BY_TYPE_VALUE_REQUEST  = 0x06
-    ATT_FIND_BY_TYPE_VALUE_RESPONSE = 0x07
-    ATT_READ_BY_TYPE_REQUEST        = 0x08
-    ATT_READ_BY_TYPE_RESPONSE       = 0x09
-    ATT_READ_REQUEST                = 0x0A
-    ATT_READ_RESPONSE               = 0x0B
-    ATT_READ_BLOB_REQUEST           = 0x0C
-    ATT_READ_BLOB_RESPONSE          = 0x0D
-    ATT_READ_MULTIPLE_REQUEST       = 0x0E
-    ATT_READ_MULTIPLE_RESPONSE      = 0x0F
-    ATT_READ_BY_GROUP_TYPE_REQUEST  = 0x10
-    ATT_READ_BY_GROUP_TYPE_RESPONSE = 0x11
-    ATT_WRITE_REQUEST               = 0x12
-    ATT_WRITE_RESPONSE              = 0x13
-    ATT_WRITE_COMMAND               = 0x52
-    ATT_SIGNED_WRITE_COMMAND        = 0xD2
-    ATT_PREPARE_WRITE_REQUEST       = 0x16
-    ATT_PREPARE_WRITE_RESPONSE      = 0x17
-    ATT_EXECUTE_WRITE_REQUEST       = 0x18
-    ATT_EXECUTE_WRITE_RESPONSE      = 0x19
-    ATT_HANDLE_VALUE_NOTIFICATION   = 0x1B
-    ATT_HANDLE_VALUE_INDICATION     = 0x1D
-    ATT_HANDLE_VALUE_CONFIRMATION   = 0x1E
+    ATT_ERROR_RESPONSE                  = 0x01
+    ATT_EXCHANGE_MTU_REQUEST            = 0x02
+    ATT_EXCHANGE_MTU_RESPONSE           = 0x03
+    ATT_FIND_INFORMATION_REQUEST        = 0x04
+    ATT_FIND_INFORMATION_RESPONSE       = 0x05
+    ATT_FIND_BY_TYPE_VALUE_REQUEST      = 0x06
+    ATT_FIND_BY_TYPE_VALUE_RESPONSE     = 0x07
+    ATT_READ_BY_TYPE_REQUEST            = 0x08
+    ATT_READ_BY_TYPE_RESPONSE           = 0x09
+    ATT_READ_REQUEST                    = 0x0A
+    ATT_READ_RESPONSE                   = 0x0B
+    ATT_READ_BLOB_REQUEST               = 0x0C
+    ATT_READ_BLOB_RESPONSE              = 0x0D
+    ATT_READ_MULTIPLE_REQUEST           = 0x0E
+    ATT_READ_MULTIPLE_RESPONSE          = 0x0F
+    ATT_READ_BY_GROUP_TYPE_REQUEST      = 0x10
+    ATT_READ_BY_GROUP_TYPE_RESPONSE     = 0x11
+    ATT_READ_MULTIPLE_VARIABLE_REQUEST  = 0x20
+    ATT_READ_MULTIPLE_VARIABLE_RESPONSE = 0x21
+    ATT_WRITE_REQUEST                   = 0x12
+    ATT_WRITE_RESPONSE                  = 0x13
+    ATT_WRITE_COMMAND                   = 0x52
+    ATT_SIGNED_WRITE_COMMAND            = 0xD2
+    ATT_PREPARE_WRITE_REQUEST           = 0x16
+    ATT_PREPARE_WRITE_RESPONSE          = 0x17
+    ATT_EXECUTE_WRITE_REQUEST           = 0x18
+    ATT_EXECUTE_WRITE_RESPONSE          = 0x19
+    ATT_HANDLE_VALUE_NOTIFICATION       = 0x1B
+    ATT_HANDLE_VALUE_INDICATION         = 0x1D
+    ATT_HANDLE_VALUE_CONFIRMATION       = 0x1E
 
 ATT_REQUESTS = [
     Opcode.ATT_EXCHANGE_MTU_REQUEST,
@@ -101,9 +112,10 @@ ATT_REQUESTS = [
     Opcode.ATT_READ_BLOB_REQUEST,
     Opcode.ATT_READ_MULTIPLE_REQUEST,
     Opcode.ATT_READ_BY_GROUP_TYPE_REQUEST,
+    Opcode.ATT_READ_MULTIPLE_VARIABLE_REQUEST,
     Opcode.ATT_WRITE_REQUEST,
     Opcode.ATT_PREPARE_WRITE_REQUEST,
-    Opcode.ATT_EXECUTE_WRITE_REQUEST
+    Opcode.ATT_EXECUTE_WRITE_REQUEST,
 ]
 
 ATT_RESPONSES = [
@@ -116,9 +128,10 @@ ATT_RESPONSES = [
     Opcode.ATT_READ_BLOB_RESPONSE,
     Opcode.ATT_READ_MULTIPLE_RESPONSE,
     Opcode.ATT_READ_BY_GROUP_TYPE_RESPONSE,
+    Opcode.ATT_READ_MULTIPLE_VARIABLE_RESPONSE,
     Opcode.ATT_WRITE_RESPONSE,
     Opcode.ATT_PREPARE_WRITE_RESPONSE,
-    Opcode.ATT_EXECUTE_WRITE_RESPONSE
+    Opcode.ATT_EXECUTE_WRITE_RESPONSE,
 ]
 
 class ErrorCode(hci.SpecableEnum):
@@ -176,6 +189,18 @@ ATT_INSUFFICIENT_RESOURCES_ERROR           = ErrorCode.INSUFFICIENT_RESOURCES
 ATT_DEFAULT_MTU = 23
 
 HANDLE_FIELD_SPEC    = {'size': 2, 'mapper': lambda x: f'0x{x:04X}'}
+_SET_OF_HANDLES_METADATA = hci.metadata({
+                'parser': lambda data, offset: (
+                    len(data),
+                    [
+                        struct.unpack_from('<H', data, i)[0]
+                        for i in range(offset, len(data), 2)
+                    ],
+                ),
+                'serializer': lambda handles: b''.join(
+                    [struct.pack('<H', handle) for handle in handles]
+                ),
+            })
 
 # fmt: on
 # pylint: enable=line-too-long
@@ -220,7 +245,7 @@ class ATT_PDU:
     fields: ClassVar[hci.Fields] = ()
     op_code: int = dataclasses.field(init=False)
     name: str = dataclasses.field(init=False)
-    _payload: Optional[bytes] = dataclasses.field(default=None, init=False)
+    _payload: bytes | None = dataclasses.field(default=None, init=False)
 
     @classmethod
     def from_bytes(cls, pdu: bytes) -> ATT_PDU:
@@ -545,7 +570,7 @@ class ATT_Read_Multiple_Request(ATT_PDU):
     See Bluetooth spec @ Vol 3, Part F - 3.4.4.7 Read Multiple Request
     '''
 
-    set_of_handles: bytes = dataclasses.field(metadata=hci.metadata("*"))
+    set_of_handles: Sequence[int] = dataclasses.field(metadata=_SET_OF_HANDLES_METADATA)
 
 
 # -----------------------------------------------------------------------------
@@ -624,6 +649,55 @@ class ATT_Read_By_Group_Type_Response(ATT_PDU):
             '  ',
         )
         return result
+
+
+# -----------------------------------------------------------------------------
+@ATT_PDU.subclass
+@dataclasses.dataclass
+class ATT_Read_Multiple_Variable_Request(ATT_PDU):
+    '''
+    See Bluetooth spec @ Vol 3, Part F - 3.4.4.11 Read Multiple Variable Request
+    '''
+
+    set_of_handles: Sequence[int] = dataclasses.field(metadata=_SET_OF_HANDLES_METADATA)
+
+
+# -----------------------------------------------------------------------------
+@ATT_PDU.subclass
+@dataclasses.dataclass
+class ATT_Read_Multiple_Variable_Response(ATT_PDU):
+    '''
+    See Bluetooth spec @ Vol 3, Part F - 3.4.4.12 Read Multiple Variable Response
+    '''
+
+    @classmethod
+    def _parse_length_value_tuples(
+        cls, data: bytes, offset: int
+    ) -> tuple[int, list[tuple[int, bytes]]]:
+        length_value_tuple_list: list[tuple[int, bytes]] = []
+        while offset < len(data):
+            length = struct.unpack_from('<H', data, offset)[0]
+            length_value_tuple_list.append(
+                (length, data[offset + 2 : offset + 2 + length])
+            )
+            offset += 2 + length
+        return (len(data), length_value_tuple_list)
+
+    length_value_tuple_list: Sequence[tuple[int, bytes]] = dataclasses.field(
+        metadata=hci.metadata(
+            {
+                'parser': lambda data, offset: ATT_Read_Multiple_Variable_Response._parse_length_value_tuples(
+                    data, offset
+                ),
+                'serializer': lambda length_value_tuple_list: b''.join(
+                    [
+                        struct.pack('<H', length) + value
+                        for length, value in length_value_tuple_list
+                    ]
+                ),
+            }
+        )
+    )
 
 
 # -----------------------------------------------------------------------------
@@ -760,29 +834,64 @@ class AttributeValue(Generic[_T]):
 
     def __init__(
         self,
-        read: Union[
-            Callable[[Connection], _T],
-            Callable[[Connection], Awaitable[_T]],
-            None,
-        ] = None,
-        write: Union[
-            Callable[[Connection, _T], None],
-            Callable[[Connection, _T], Awaitable[None]],
-            None,
-        ] = None,
+        read: (
+            Callable[[Connection], _T] | Callable[[Connection], Awaitable[_T]] | None
+        ) = None,
+        write: (
+            Callable[[Connection, _T], None]
+            | Callable[[Connection, _T], Awaitable[None]]
+            | None
+        ) = None,
     ):
         self._read = read
         self._write = write
 
-    def read(self, connection: Connection) -> Union[_T, Awaitable[_T]]:
+    def read(self, connection: Connection) -> _T | Awaitable[_T]:
         if self._read is None:
             raise InvalidOperationError('AttributeValue has no read function')
         return self._read(connection)
 
-    def write(self, connection: Connection, value: _T) -> Union[Awaitable[None], None]:
+    def write(self, connection: Connection, value: _T) -> Awaitable[None] | None:
         if self._write is None:
             raise InvalidOperationError('AttributeValue has no write function')
         return self._write(connection, value)
+
+
+# -----------------------------------------------------------------------------
+class AttributeValueV2(Generic[_T]):
+    '''
+    Attribute value compatible with enhanced bearers.
+
+    The only difference between AttributeValue and AttributeValueV2 is that the actual
+    bearer (ACL connection for un-enhanced bearer, L2CAP channel for enhanced bearer)
+    will be passed into read and write callbacks in V2, while in V1 it is always
+    the base ACL connection.
+
+    This is only required when attributes must distinguish bearers, otherwise normal
+    `AttributeValue` objects are also applicable in enhanced bearers.
+    '''
+
+    def __init__(
+        self,
+        read: Callable[[Bearer], Awaitable[_T]] | Callable[[Bearer], _T] | None = None,
+        write: (
+            Callable[[Bearer, _T], Awaitable[None]]
+            | Callable[[Bearer, _T], None]
+            | None
+        ) = None,
+    ):
+        self._read = read
+        self._write = write
+
+    def read(self, bearer: Bearer) -> _T | Awaitable[_T]:
+        if self._read is None:
+            raise InvalidOperationError('AttributeValue has no read function')
+        return self._read(bearer)
+
+    def write(self, bearer: Bearer, value: _T) -> Awaitable[None] | None:
+        if self._write is None:
+            raise InvalidOperationError('AttributeValue has no write function')
+        return self._write(bearer, value)
 
 
 # -----------------------------------------------------------------------------
@@ -828,13 +937,13 @@ class Attribute(utils.EventEmitter, Generic[_T]):
     EVENT_READ = "read"
     EVENT_WRITE = "write"
 
-    value: Union[AttributeValue[_T], _T, None]
+    value: AttributeValue[_T] | _T | None
 
     def __init__(
         self,
-        attribute_type: Union[str, bytes, UUID],
-        permissions: Union[str, Attribute.Permissions],
-        value: Union[AttributeValue[_T], _T, None] = None,
+        attribute_type: str | bytes | UUID,
+        permissions: str | Attribute.Permissions,
+        value: AttributeValue[_T] | _T | None = None,
     ) -> None:
         utils.EventEmitter.__init__(self)
         self.handle = 0
@@ -860,7 +969,8 @@ class Attribute(utils.EventEmitter, Generic[_T]):
     def decode_value(self, value: bytes) -> _T:
         return value  # type: ignore
 
-    async def read_value(self, connection: Connection) -> bytes:
+    async def read_value(self, bearer: Bearer) -> bytes:
+        connection = bearer.connection if is_enhanced_bearer(bearer) else bearer
         if (
             (self.permissions & self.READ_REQUIRES_ENCRYPTION)
             and connection is not None
@@ -883,10 +993,21 @@ class Attribute(utils.EventEmitter, Generic[_T]):
                 error_code=ATT_INSUFFICIENT_AUTHORIZATION_ERROR, att_handle=self.handle
             )
 
-        value: Union[_T, None]
+        value: _T | None
         if isinstance(self.value, AttributeValue):
             try:
                 read_value = self.value.read(connection)
+                if inspect.isawaitable(read_value):
+                    value = await read_value
+                else:
+                    value = read_value
+            except ATT_Error as error:
+                raise ATT_Error(
+                    error_code=error.error_code, att_handle=self.handle
+                ) from error
+        elif isinstance(self.value, AttributeValueV2):
+            try:
+                read_value = self.value.read(bearer)
                 if inspect.isawaitable(read_value):
                     value = await read_value
                 else:
@@ -902,7 +1023,8 @@ class Attribute(utils.EventEmitter, Generic[_T]):
 
         return b'' if value is None else self.encode_value(value)
 
-    async def write_value(self, connection: Connection, value: bytes) -> None:
+    async def write_value(self, bearer: Bearer, value: bytes) -> None:
+        connection = bearer.connection if is_enhanced_bearer(bearer) else bearer
         if (
             (self.permissions & self.WRITE_REQUIRES_ENCRYPTION)
             and connection is not None
@@ -930,6 +1052,15 @@ class Attribute(utils.EventEmitter, Generic[_T]):
         if isinstance(self.value, AttributeValue):
             try:
                 result = self.value.write(connection, decoded_value)
+                if inspect.isawaitable(result):
+                    await result
+            except ATT_Error as error:
+                raise ATT_Error(
+                    error_code=error.error_code, att_handle=self.handle
+                ) from error
+        elif isinstance(self.value, AttributeValueV2):
+            try:
+                result = self.value.write(bearer, decoded_value)
                 if inspect.isawaitable(result):
                     await result
             except ATT_Error as error:
