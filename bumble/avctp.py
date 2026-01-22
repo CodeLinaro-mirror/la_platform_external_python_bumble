@@ -21,7 +21,6 @@ import logging
 import struct
 from collections.abc import Callable
 from enum import IntEnum
-from typing import Optional
 
 from bumble import core, l2cap
 from bumble.colors import color
@@ -147,7 +146,7 @@ class MessageAssembler:
 class Protocol:
     CommandHandler = Callable[[int, bytes], None]
     command_handlers: dict[int, CommandHandler]  # Command handlers, by PID
-    ResponseHandler = Callable[[int, Optional[bytes]], None]
+    ResponseHandler = Callable[[int, bytes | None], None]
     response_handlers: dict[int, ResponseHandler]  # Response handlers, by PID
     next_transaction_label: int
     message_assembler: MessageAssembler
@@ -236,7 +235,7 @@ class Protocol:
             )
             + payload
         )
-        self.l2cap_channel.send_pdu(pdu)
+        self.l2cap_channel.write(pdu)
 
     def send_command(self, transaction_label: int, pid: int, payload: bytes) -> None:
         logger.debug(
@@ -258,7 +257,7 @@ class Protocol:
 
     def send_ipid(self, transaction_label: int, pid: int) -> None:
         logger.debug(
-            ">>> AVCTP ipid: " f"transaction_label={transaction_label}, " f"pid={pid}"
+            f">>> AVCTP ipid: transaction_label={transaction_label}, pid={pid}"
         )
         self.send_message(transaction_label, False, True, pid, b'')
 

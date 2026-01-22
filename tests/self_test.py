@@ -35,7 +35,7 @@ from bumble.smp import (
     OobLegacyContext,
 )
 
-from .test_utils import TwoDevices
+from .test_utils import TwoDevices, async_barrier
 
 # -----------------------------------------------------------------------------
 # Logging
@@ -56,14 +56,14 @@ async def test_self_disconnection():
     two_devices = TwoDevices()
     await two_devices.setup_connection()
     await two_devices.connections[0].disconnect()
-    assert two_devices.connections[0] is None
-    assert two_devices.connections[1] is None
+    await async_barrier()
+    assert not two_devices.connections
 
     two_devices = TwoDevices()
     await two_devices.setup_connection()
     await two_devices.connections[1].disconnect()
-    assert two_devices.connections[0] is None
-    assert two_devices.connections[1] is None
+    await async_barrier()
+    assert not two_devices.connections
 
 
 # -----------------------------------------------------------------------------
@@ -80,7 +80,8 @@ async def test_self_classic_connection(responder_role):
     two_devices.devices[1].classic_enabled = True
 
     # Start
-    await two_devices.setup_connection()
+    for dev in two_devices.devices:
+        await dev.power_on()
 
     # Connect the two devices
     await asyncio.gather(
@@ -418,8 +419,9 @@ async def test_self_smp_over_classic():
     two_devices.devices[1].classic_enabled = True
 
     # Connect the two devices
-    await two_devices.devices[0].power_on()
-    await two_devices.devices[1].power_on()
+    for dev in two_devices.devices:
+        await dev.power_on()
+
     await asyncio.gather(
         two_devices.devices[0].connect(
             two_devices.devices[1].public_address, transport=PhysicalTransport.BR_EDR

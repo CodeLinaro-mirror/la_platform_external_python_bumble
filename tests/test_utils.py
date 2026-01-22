@@ -16,7 +16,7 @@
 # Imports
 # -----------------------------------------------------------------------------
 import asyncio
-from typing import Optional
+import functools
 
 from typing_extensions import Self
 
@@ -30,65 +30,69 @@ from bumble.transport.common import AsyncPipeSink
 
 
 # -----------------------------------------------------------------------------
-class TwoDevices:
-    connections: list[Optional[Connection]]
+class Devices:
+    connections: dict[int, Connection]
 
-    def __init__(self) -> None:
-        self.connections = [None, None]
+    def __init__(self, num_devices: int) -> None:
+        self.connections = {}
 
         self.link = LocalLink()
-        addresses = ['F0:F1:F2:F3:F4:F5', 'F5:F4:F3:F2:F1:F0']
+        addresses = [":".join([f"F{i}"] * 6) for i in range(num_devices)]
         self.controllers = [
-            Controller('C1', link=self.link, public_address=addresses[0]),
-            Controller('C2', link=self.link, public_address=addresses[1]),
+            Controller(f'C{i + i}', link=self.link, public_address=addresses[i])
+            for i in range(num_devices)
         ]
         self.devices = [
             Device(
-                address=Address(addresses[0]),
-                host=Host(self.controllers[0], AsyncPipeSink(self.controllers[0])),
-            ),
-            Device(
-                address=Address(addresses[1]),
-                host=Host(self.controllers[1], AsyncPipeSink(self.controllers[1])),
-            ),
+                address=Address(addresses[i]),
+                host=Host(self.controllers[i], AsyncPipeSink(self.controllers[i])),
+            )
+            for i in range(num_devices)
         ]
 
-        self.devices[0].on(
-            'connection', lambda connection: self.on_connection(0, connection)
-        )
-        self.devices[1].on(
-            'connection', lambda connection: self.on_connection(1, connection)
-        )
+        for i in range(num_devices):
+            self.devices[i].on(
+                self.devices[i].EVENT_CONNECTION,
+                functools.partial(self.on_connection, i),
+            )
 
         self.paired = [
-            asyncio.get_event_loop().create_future(),
-            asyncio.get_event_loop().create_future(),
+            asyncio.get_event_loop().create_future() for _ in range(num_devices)
         ]
 
-    def on_connection(self, which, connection):
+    def on_connection(self, which: int, connection: Connection) -> None:
         self.connections[which] = connection
-        connection.on('disconnection', lambda code: self.on_disconnection(which))
+        connection.on(
+            connection.EVENT_DISCONNECTION, lambda *_: self.on_disconnection(which)
+        )
 
-    def on_disconnection(self, which):
-        self.connections[which] = None
+    def on_disconnection(self, which: int) -> None:
+        self.connections.pop(which, None)
 
     def on_paired(self, which: int, keys: PairingKeys) -> None:
         self.paired[which].set_result(keys)
 
     async def setup_connection(self) -> None:
         # Start
-        await self.devices[0].power_on()
-        await self.devices[1].power_on()
+        for dev in self.devices:
+            await dev.power_on()
 
-        # Connect the two devices
-        await self.devices[0].connect(self.devices[1].random_address)
-
-        # Check the post conditions
-        assert self.connections[0] is not None
-        assert self.connections[1] is not None
+        # Connect devices
+        for dev in self.devices[1:]:
+            connection_future = asyncio.get_running_loop().create_future()
+            dev.once(dev.EVENT_CONNECTION, connection_future.set_result)
+            await dev.start_advertising(advertising_interval_min=1.0)
+            await self.devices[0].connect(dev.random_address)
+            await connection_future
 
     def __getitem__(self, index: int) -> Device:
         return self.devices[index]
+
+
+# -----------------------------------------------------------------------------
+class TwoDevices(Devices):
+    def __init__(self) -> None:
+        super().__init__(2)
 
     @classmethod
     async def create_with_connection(cls: type[Self]) -> Self:
@@ -99,6 +103,8 @@ class TwoDevices:
 
 # -----------------------------------------------------------------------------
 async def async_barrier():
-    ready = asyncio.get_running_loop().create_future()
-    asyncio.get_running_loop().call_soon(ready.set_result, None)
-    await ready
+    # TODO: Remove async barrier - this doesn't always mean what we want.
+    for _ in range(3):
+        ready = asyncio.get_running_loop().create_future()
+        asyncio.get_running_loop().call_soon(ready.set_result, None)
+        await ready

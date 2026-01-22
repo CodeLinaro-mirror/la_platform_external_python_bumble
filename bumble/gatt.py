@@ -28,9 +28,10 @@ import enum
 import functools
 import logging
 import struct
-from typing import Iterable, Optional, Sequence, TypeVar, Union
+from collections.abc import Iterable, Sequence
+from typing import ClassVar, TypeVar
 
-from bumble.att import Attribute, AttributeValue
+from bumble.att import Attribute, AttributeValue, AttributeValueV2
 from bumble.colors import color
 from bumble.core import UUID, BaseBumbleError
 
@@ -227,7 +228,6 @@ GATT_MEDIA_CONTROL_POINT_CHARACTERISTIC                   = UUID.from_16_bits(0x
 GATT_MEDIA_CONTROL_POINT_OPCODES_SUPPORTED_CHARACTERISTIC = UUID.from_16_bits(0x2BA5, 'Media Control Point Opcodes Supported')
 GATT_SEARCH_RESULTS_OBJECT_ID_CHARACTERISTIC              = UUID.from_16_bits(0x2BA6, 'Search Results Object ID')
 GATT_SEARCH_CONTROL_POINT_CHARACTERISTIC                  = UUID.from_16_bits(0x2BA7, 'Search Control Point')
-GATT_CONTENT_CONTROL_ID_CHARACTERISTIC                    = UUID.from_16_bits(0x2BBA, 'Content Control Id')
 
 # Telephone Bearer Service (TBS)
 GATT_BEARER_PROVIDER_NAME_CHARACTERISTIC                      = UUID.from_16_bits(0x2BB3, 'Bearer Provider Name')
@@ -356,7 +356,7 @@ class Service(Attribute):
 
     def __init__(
         self,
-        uuid: Union[str, UUID],
+        uuid: str | UUID,
         characteristics: Iterable[Characteristic],
         primary=True,
         included_services: Iterable[Service] = (),
@@ -379,7 +379,7 @@ class Service(Attribute):
         self.characteristics = list(characteristics)
         self.primary = primary
 
-    def get_advertising_data(self) -> Optional[bytes]:
+    def get_advertising_data(self) -> bytes | None:
         """
         Get Service specific advertising data
         Defined by each Service, default value is empty
@@ -403,7 +403,7 @@ class TemplateService(Service):
     to expose their UUID as a class property
     '''
 
-    UUID: UUID
+    UUID: ClassVar[UUID]
 
     def __init__(
         self,
@@ -503,10 +503,10 @@ class Characteristic(Attribute[_T]):
 
     def __init__(
         self,
-        uuid: Union[str, bytes, UUID],
+        uuid: str | bytes | UUID,
         properties: Characteristic.Properties,
-        permissions: Union[str, Attribute.Permissions],
-        value: Union[AttributeValue[_T], _T, None] = None,
+        permissions: str | Attribute.Permissions,
+        value: AttributeValue[_T] | _T | None = None,
         descriptors: Sequence[Descriptor] = (),
     ):
         super().__init__(uuid, permissions, value)
@@ -579,7 +579,7 @@ class Descriptor(Attribute):
     def __str__(self) -> str:
         if isinstance(self.value, bytes):
             value_str = self.value.hex()
-        elif isinstance(self.value, CharacteristicValue):
+        elif isinstance(self.value, (AttributeValue, AttributeValueV2)):
             value_str = '<dynamic>'
         else:
             value_str = '<...>'
