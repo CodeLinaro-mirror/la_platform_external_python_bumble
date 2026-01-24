@@ -22,7 +22,6 @@ from __future__ import annotations
 import logging
 import struct
 from dataclasses import dataclass
-from typing import Optional
 
 from bumble import utils
 from bumble.att import ATT_Error
@@ -129,7 +128,7 @@ class AudioInputState:
     mute: Mute = Mute.NOT_MUTED
     gain_mode: GainMode = GainMode.MANUAL
     change_counter: int = 0
-    attribute: Optional[Attribute] = None
+    attribute: Attribute | None = None
 
     def __bytes__(self) -> bytes:
         return bytes(
@@ -199,7 +198,6 @@ class AudioInputControlPoint:
     gain_settings_properties: GainSettingsProperties
 
     async def on_write(self, connection: Connection, value: bytes) -> None:
-
         opcode = AudioInputControlPointOpCode(value[0])
 
         if opcode == AudioInputControlPointOpCode.SET_GAIN_SETTING:
@@ -317,7 +315,7 @@ class AudioInputDescription:
     '''
 
     audio_input_description: str = "Bluetooth"
-    attribute: Optional[Attribute] = None
+    attribute: Attribute | None = None
 
     def on_read(self, _connection: Connection) -> str:
         return self.audio_input_description
@@ -340,11 +338,11 @@ class AICSService(TemplateService):
 
     def __init__(
         self,
-        audio_input_state: Optional[AudioInputState] = None,
-        gain_settings_properties: Optional[GainSettingsProperties] = None,
+        audio_input_state: AudioInputState | None = None,
+        gain_settings_properties: GainSettingsProperties | None = None,
         audio_input_type: str = "local",
-        audio_input_status: Optional[AudioInputStatus] = None,
-        audio_input_description: Optional[AudioInputDescription] = None,
+        audio_input_status: AudioInputStatus | None = None,
+        audio_input_description: AudioInputDescription | None = None,
     ):
         self.audio_input_state = (
             AudioInputState() if audio_input_state is None else audio_input_state

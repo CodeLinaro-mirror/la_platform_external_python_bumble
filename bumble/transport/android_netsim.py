@@ -22,7 +22,6 @@ import os
 import pathlib
 import platform
 import sys
-from typing import Optional
 
 import grpc.aio
 
@@ -66,7 +65,7 @@ DEFAULT_VARIANT = ''
 
 
 # -----------------------------------------------------------------------------
-def get_ini_dir() -> Optional[pathlib.Path]:
+def get_ini_dir() -> pathlib.Path | None:
     if sys.platform == 'darwin':
         if tmpdir := os.getenv('TMPDIR', None):
             return pathlib.Path(tmpdir)
@@ -100,7 +99,7 @@ def find_grpc_port(instance_number: int) -> int:
     ini_file = ini_dir / ini_file_name(instance_number)
     logger.debug(f'Looking for .ini file at {ini_file}')
     if ini_file.is_file():
-        with open(ini_file, 'r') as ini_file_data:
+        with open(ini_file) as ini_file_data:
             for line in ini_file_data.readlines():
                 if '=' in line:
                     key, value = line.split('=')
@@ -146,7 +145,7 @@ def publish_grpc_port(grpc_port: int, instance_number: int) -> bool:
 
 # -----------------------------------------------------------------------------
 async def open_android_netsim_controller_transport(
-    server_host: Optional[str], server_port: int, options: dict[str, str]
+    server_host: str | None, server_port: int, options: dict[str, str]
 ) -> Transport:
     if server_host == '_' or not server_host:
         server_host = 'localhost'
@@ -156,21 +155,26 @@ async def open_android_netsim_controller_transport(
         logger.warning("unable to publish gRPC port")
 
     class HciDevice:
-        def __init__(self, context, on_data_received):
+        def __init__(self, context, server):
             self.context = context
-            self.on_data_received = on_data_received
+            self.server = server
             self.name = None
+            self.sink = None
             self.loop = asyncio.get_running_loop()
             self.done = self.loop.create_future()
-            self.task = self.loop.create_task(self.pump())
 
         async def pump(self):
             try:
                 await self.pump_loop()
             except asyncio.CancelledError:
                 logger.debug('Pump task canceled')
-                if not self.done.done():
-                    self.done.set_result(None)
+            finally:
+                if self.sink:
+                    logger.debug('Releasing sink')
+                    self.server.release_sink()
+                    self.sink = None
+
+                logger.debug('Pump task terminated')
 
         async def pump_loop(self):
             while True:
@@ -186,15 +190,26 @@ async def open_android_netsim_controller_transport(
                     if request.WhichOneof('request_type') == 'initial_info':
                         logger.debug(f'Received initial info: {request}')
 
+                        self.name = request.initial_info.name
+
                         # We only accept BLUETOOTH
                         if request.initial_info.chip.kind != ChipKind.BLUETOOTH:
                             logger.warning('Unsupported chip type')
                             error = PacketResponse(error='Unsupported chip type')
                             await self.context.write(error)
-                            return
+                            # return
+                            continue
 
-                    self.name = request.initial_info.name
-                    continue
+                        # Lease the sink so that no other device can send
+                        self.sink = self.server.lease_sink(self)
+                        if self.sink is None:
+                            logger.warning('Another device is already connected')
+                            error = PacketResponse(error='Device busy')
+                            await self.context.write(error)
+                            # return
+                            continue
+
+                        continue
 
                 # Expect a data packet
                 request_type = request.WhichOneof('request_type')
@@ -205,10 +220,10 @@ async def open_android_netsim_controller_transport(
                     continue
 
                 # Process the packet
-                data = (
+                assert self.sink is not None
+                self.sink(
                     bytes([request.hci_packet.packet_type]) + request.hci_packet.packet
                 )
-                self.on_data_received(data)
 
         async def send_packet(self, data):
             return await self.context.write(
@@ -216,12 +231,6 @@ async def open_android_netsim_controller_transport(
                     hci_packet=HCIPacket(packet_type=data[0], packet=data[1:])
                 )
             )
-
-        def terminate(self):
-            self.task.cancel()
-
-        async def wait_for_termination(self):
-            await self.done
 
     server_address = f'{server_host}:{server_port}'
 
@@ -258,27 +267,27 @@ async def open_android_netsim_controller_transport(
 
             return await self.device.send_packet(packet)
 
-        async def StreamPackets(self, _request_iterator, context):
+        def lease_sink(self, device):
+            if self.device:
+                return None
+            self.device = device
+            return self.parser.feed_data
+
+        def release_sink(self):
+            self.device = None
+
+        async def StreamPackets(self, request_iterator, context):
             logger.debug('StreamPackets request')
 
-            # Check that we don't already have a device
-            if self.device:
-                logger.debug('Busy, already serving a device')
-                return PacketResponse(error='Busy')
-
             # Instantiate a new device
-            self.device = HciDevice(context, self.parser.feed_data)
+            device = HciDevice(context, self)
 
-            # Wait for the device to terminate
-            logger.debug('Waiting for device to terminate')
+            # Pump packets to/from the device
+            logger.debug('Pumping device packets')
             try:
-                await self.device.wait_for_termination()
-            except asyncio.CancelledError:
-                logger.debug('Request canceled')
-                self.device.terminate()
-
-            logger.debug('Device terminated')
-            self.device = None
+                await device.pump()
+            finally:
+                logger.debug('Pump terminated')
 
     server = Server()
     await server.start()
@@ -291,9 +300,9 @@ async def open_android_netsim_controller_transport(
 
 # -----------------------------------------------------------------------------
 async def open_android_netsim_host_transport_with_address(
-    server_host: Optional[str],
+    server_host: str | None,
     server_port: int,
-    options: Optional[dict[str, str]] = None,
+    options: dict[str, str] | None = None,
 ):
     if server_host == '_' or not server_host:
         server_host = 'localhost'
@@ -318,7 +327,7 @@ async def open_android_netsim_host_transport_with_address(
 
 # -----------------------------------------------------------------------------
 async def open_android_netsim_host_transport_with_channel(
-    channel, options: Optional[dict[str, str]] = None
+    channel, options: dict[str, str] | None = None
 ):
     # Wrapper for I/O operations
     class HciDevice:
@@ -398,7 +407,7 @@ async def open_android_netsim_host_transport_with_channel(
 
 
 # -----------------------------------------------------------------------------
-async def open_android_netsim_transport(spec: Optional[str]) -> Transport:
+async def open_android_netsim_transport(spec: str | None) -> Transport:
     '''
     Open a transport connection as a client or server, implementing Android's `netsim`
     simulator protocol over gRPC.

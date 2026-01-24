@@ -26,21 +26,23 @@
 from __future__ import annotations
 
 import asyncio
+import functools
 import logging
 import struct
+from collections.abc import Callable, Iterable
 from datetime import datetime
 from typing import (
     TYPE_CHECKING,
     Any,
-    Callable,
+    ClassVar,
     Generic,
-    Iterable,
-    Optional,
     TypeVar,
-    Union,
+    overload,
 )
 
-from bumble import att, core, utils
+from typing_extensions import Self
+
+from bumble import att, core, l2cap, utils
 from bumble.colors import color
 from bumble.core import UUID, InvalidStateError
 from bumble.gatt import (
@@ -57,12 +59,12 @@ from bumble.gatt import (
 )
 from bumble.hci import HCI_Constant
 
+if TYPE_CHECKING:
+    from bumble import device as device_module
+
 # -----------------------------------------------------------------------------
 # Typing
 # -----------------------------------------------------------------------------
-if TYPE_CHECKING:
-    from bumble.device import Connection
-
 _T = TypeVar('_T')
 
 # -----------------------------------------------------------------------------
@@ -192,7 +194,7 @@ class CharacteristicProxy(AttributeProxy[_T]):
         self.descriptors_discovered = False
         self.subscribers = {}  # Map from subscriber to proxy subscriber
 
-    def get_descriptor(self, descriptor_type: UUID) -> Optional[DescriptorProxy]:
+    def get_descriptor(self, descriptor_type: UUID) -> DescriptorProxy | None:
         for descriptor in self.descriptors:
             if descriptor.type == descriptor_type:
                 return descriptor
@@ -204,7 +206,7 @@ class CharacteristicProxy(AttributeProxy[_T]):
 
     async def subscribe(
         self,
-        subscriber: Optional[Callable[[_T], Any]] = None,
+        subscriber: Callable[[_T], Any] | None = None,
         prefer_notify: bool = True,
     ) -> None:
         if subscriber is not None:
@@ -250,10 +252,10 @@ class ProfileServiceProxy:
     Base class for profile-specific service proxies
     '''
 
-    SERVICE_CLASS: type[TemplateService]
+    SERVICE_CLASS: ClassVar[type[TemplateService]]
 
     @classmethod
-    def from_client(cls, client: Client) -> Optional[ProfileServiceProxy]:
+    def from_client(cls, client: Client) -> Self | None:
         return ServiceProxy.from_client(cls, client, cls.SERVICE_CLASS.UUID)
 
 
@@ -264,16 +266,14 @@ class Client:
     services: list[ServiceProxy]
     cached_values: dict[int, tuple[datetime, bytes]]
     notification_subscribers: dict[
-        int, set[Union[CharacteristicProxy, Callable[[bytes], Any]]]
+        int, set[CharacteristicProxy | Callable[[bytes], Any]]
     ]
-    indication_subscribers: dict[
-        int, set[Union[CharacteristicProxy, Callable[[bytes], Any]]]
-    ]
-    pending_response: Optional[asyncio.futures.Future[att.ATT_PDU]]
-    pending_request: Optional[att.ATT_PDU]
+    indication_subscribers: dict[int, set[CharacteristicProxy | Callable[[bytes], Any]]]
+    pending_response: asyncio.futures.Future[att.ATT_PDU] | None
+    pending_request: att.ATT_PDU | None
 
-    def __init__(self, connection: Connection) -> None:
-        self.connection = connection
+    def __init__(self, bearer: att.Bearer) -> None:
+        self.bearer = bearer
         self.mtu_exchange_done = False
         self.request_semaphore = asyncio.Semaphore(1)
         self.pending_request = None
@@ -283,21 +283,76 @@ class Client:
         self.services = []
         self.cached_values = {}
 
-        connection.on(connection.EVENT_DISCONNECTION, self.on_disconnection)
+        if att.is_enhanced_bearer(bearer):
+            bearer.on(bearer.EVENT_CLOSE, self.on_disconnection)
+            self._bearer_id = (
+                f'[0x{bearer.connection.handle:04X}|CID=0x{bearer.source_cid:04X}]'
+            )
+            self.connection = bearer.connection
+        else:
+            bearer.on(bearer.EVENT_DISCONNECTION, self.on_disconnection)
+            self._bearer_id = f'[0x{bearer.handle:04X}]'
+            self.connection = bearer
+
+    @overload
+    @classmethod
+    async def connect_eatt(
+        cls,
+        connection: device_module.Connection,
+        spec: l2cap.LeCreditBasedChannelSpec | None = None,
+    ) -> Client: ...
+
+    @overload
+    @classmethod
+    async def connect_eatt(
+        cls,
+        connection: device_module.Connection,
+        spec: l2cap.LeCreditBasedChannelSpec | None = None,
+        count: int = 1,
+    ) -> list[Client]: ...
+
+    @classmethod
+    async def connect_eatt(
+        cls,
+        connection: device_module.Connection,
+        spec: l2cap.LeCreditBasedChannelSpec | None = None,
+        count: int = 1,
+    ) -> list[Client] | Client:
+        channels = await connection.device.l2cap_channel_manager.create_enhanced_credit_based_channels(
+            connection,
+            spec or l2cap.LeCreditBasedChannelSpec(psm=att.EATT_PSM),
+            count,
+        )
+
+        def on_pdu(client: Client, pdu: bytes):
+            client.on_gatt_pdu(att.ATT_PDU.from_bytes(pdu))
+
+        clients = [cls(channel) for channel in channels]
+        for channel, client in zip(channels, clients):
+            channel.sink = functools.partial(on_pdu, client)
+            channel.att_mtu = att.ATT_DEFAULT_MTU
+        return clients[0] if count == 1 else clients
+
+    @property
+    def mtu(self) -> int:
+        return self.bearer.att_mtu
+
+    @mtu.setter
+    def mtu(self, value: int) -> None:
+        self.bearer.on_att_mtu_update(value)
 
     def send_gatt_pdu(self, pdu: bytes) -> None:
-        self.connection.send_l2cap_pdu(att.ATT_CID, pdu)
+        if att.is_enhanced_bearer(self.bearer):
+            self.bearer.write(pdu)
+        else:
+            self.bearer.send_l2cap_pdu(att.ATT_CID, pdu)
 
     async def send_command(self, command: att.ATT_PDU) -> None:
-        logger.debug(
-            f'GATT Command from client: [0x{self.connection.handle:04X}] {command}'
-        )
+        logger.debug(f'GATT Command from client: {self._bearer_id} {command}')
         self.send_gatt_pdu(bytes(command))
 
     async def send_request(self, request: att.ATT_PDU):
-        logger.debug(
-            f'GATT Request from client: [0x{self.connection.handle:04X}] {request}'
-        )
+        logger.debug(f'GATT Request from client: {self._bearer_id} {request}')
 
         # Wait until we can send (only one pending command at a time for the connection)
         response = None
@@ -326,10 +381,7 @@ class Client:
     def send_confirmation(
         self, confirmation: att.ATT_Handle_Value_Confirmation
     ) -> None:
-        logger.debug(
-            f'GATT Confirmation from client: [0x{self.connection.handle:04X}] '
-            f'{confirmation}'
-        )
+        logger.debug(f'GATT Confirmation from client: {self._bearer_id} {confirmation}')
         self.send_gatt_pdu(bytes(confirmation))
 
     async def request_mtu(self, mtu: int) -> int:
@@ -341,7 +393,7 @@ class Client:
 
         # We can only send one request per connection
         if self.mtu_exchange_done:
-            return self.connection.att_mtu
+            return self.mtu
 
         # Send the request
         self.mtu_exchange_done = True
@@ -352,15 +404,15 @@ class Client:
             raise att.ATT_Error(error_code=response.error_code, message=response)
 
         # Compute the final MTU
-        self.connection.att_mtu = min(mtu, response.server_rx_mtu)
+        self.mtu = min(mtu, response.server_rx_mtu)
 
-        return self.connection.att_mtu
+        return self.mtu
 
     def get_services_by_uuid(self, uuid: UUID) -> list[ServiceProxy]:
         return [service for service in self.services if service.uuid == uuid]
 
     def get_characteristics_by_uuid(
-        self, uuid: UUID, service: Optional[ServiceProxy] = None
+        self, uuid: UUID, service: ServiceProxy | None = None
     ) -> list[CharacteristicProxy[bytes]]:
         services = [service] if service else self.services
         return [
@@ -369,13 +421,14 @@ class Client:
             if c.uuid == uuid
         ]
 
-    def get_attribute_grouping(self, attribute_handle: int) -> Optional[
-        Union[
-            ServiceProxy,
-            tuple[ServiceProxy, CharacteristicProxy],
-            tuple[ServiceProxy, CharacteristicProxy, DescriptorProxy],
-        ]
-    ]:
+    def get_attribute_grouping(
+        self, attribute_handle: int
+    ) -> (
+        ServiceProxy
+        | tuple[ServiceProxy, CharacteristicProxy]
+        | tuple[ServiceProxy, CharacteristicProxy, DescriptorProxy]
+        | None
+    ):
         """
         Get the attribute(s) associated with an attribute handle
         """
@@ -478,7 +531,7 @@ class Client:
 
         return services
 
-    async def discover_service(self, uuid: Union[str, UUID]) -> list[ServiceProxy]:
+    async def discover_service(self, uuid: str | UUID) -> list[ServiceProxy]:
         '''
         See Vol 3, Part G - 4.4.2 Discover Primary Service by Service UUID
         '''
@@ -612,7 +665,7 @@ class Client:
         return included_services
 
     async def discover_characteristics(
-        self, uuids, service: Optional[ServiceProxy]
+        self, uuids, service: ServiceProxy | None
     ) -> list[CharacteristicProxy[bytes]]:
         '''
         See Vol 3, Part G - 4.6.1 Discover All Characteristics of a Service and 4.6.2
@@ -699,9 +752,9 @@ class Client:
 
     async def discover_descriptors(
         self,
-        characteristic: Optional[CharacteristicProxy] = None,
-        start_handle: Optional[int] = None,
-        end_handle: Optional[int] = None,
+        characteristic: CharacteristicProxy | None = None,
+        start_handle: int | None = None,
+        end_handle: int | None = None,
     ) -> list[DescriptorProxy]:
         '''
         See Vol 3, Part G - 4.7.1 Discover All Characteristic Descriptors
@@ -810,7 +863,7 @@ class Client:
     async def subscribe(
         self,
         characteristic: CharacteristicProxy,
-        subscriber: Optional[Callable[[Any], Any]] = None,
+        subscriber: Callable[[Any], Any] | None = None,
         prefer_notify: bool = True,
     ) -> None:
         # If we haven't already discovered the descriptors for this characteristic,
@@ -860,7 +913,7 @@ class Client:
     async def unsubscribe(
         self,
         characteristic: CharacteristicProxy,
-        subscriber: Optional[Callable[[Any], Any]] = None,
+        subscriber: Callable[[Any], Any] | None = None,
         force: bool = False,
     ) -> None:
         '''
@@ -925,7 +978,7 @@ class Client:
             await self.write_value(cccd, b'\x00\x00', with_response=True)
 
     async def read_value(
-        self, attribute: Union[int, AttributeProxy], no_long_read: bool = False
+        self, attribute: int | AttributeProxy, no_long_read: bool = False
     ) -> bytes:
         '''
         See Vol 3, Part G - 4.8.1 Read Characteristic Value
@@ -946,7 +999,7 @@ class Client:
         # If the value is the max size for the MTU, try to read more unless the caller
         # specifically asked not to do that
         attribute_value = response.attribute_value
-        if not no_long_read and len(attribute_value) == self.connection.att_mtu - 1:
+        if not no_long_read and len(attribute_value) == self.mtu - 1:
             logger.debug('using READ BLOB to get the rest of the value')
             offset = len(attribute_value)
             while True:
@@ -970,7 +1023,7 @@ class Client:
                 part = response.part_attribute_value
                 attribute_value += part
 
-                if len(part) < self.connection.att_mtu - 1:
+                if len(part) < self.mtu - 1:
                     break
 
                 offset += len(part)
@@ -980,7 +1033,7 @@ class Client:
         return attribute_value
 
     async def read_characteristics_by_uuid(
-        self, uuid: UUID, service: Optional[ServiceProxy]
+        self, uuid: UUID, service: ServiceProxy | None
     ) -> list[bytes]:
         '''
         See Vol 3, Part G - 4.8.2 Read Using Characteristic UUID
@@ -1038,7 +1091,7 @@ class Client:
 
     async def write_value(
         self,
-        attribute: Union[int, AttributeProxy],
+        attribute: int | AttributeProxy,
         value: bytes,
         with_response: bool = False,
     ) -> None:
@@ -1066,14 +1119,13 @@ class Client:
                 )
             )
 
-    def on_disconnection(self, _) -> None:
+    def on_disconnection(self, *args) -> None:
+        del args  # unused.
         if self.pending_response and not self.pending_response.done():
             self.pending_response.cancel()
 
     def on_gatt_pdu(self, att_pdu: att.ATT_PDU) -> None:
-        logger.debug(
-            f'GATT Response to client: [0x{self.connection.handle:04X}] {att_pdu}'
-        )
+        logger.debug(f'GATT Response to client: {self._bearer_id} {att_pdu}')
         if att_pdu.op_code in att.ATT_RESPONSES:
             if self.pending_request is None:
                 # Not expected!
@@ -1103,8 +1155,7 @@ class Client:
             else:
                 logger.warning(
                     color(
-                        '--- Ignoring GATT Response from '
-                        f'[0x{self.connection.handle:04X}]: ',
+                        '--- Ignoring GATT Response from ' f'{self._bearer_id}: ',
                         'red',
                     )
                     + str(att_pdu)
