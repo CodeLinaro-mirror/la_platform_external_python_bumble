@@ -30,6 +30,7 @@ from bumble.profiles.ancs import (
     NotificationAttributeId,
 )
 from bumble.transport import open_transport
+from bumble.utils import AsyncRunner
 
 # -----------------------------------------------------------------------------
 _cached_app_names: dict[str, str] = {}
@@ -90,15 +91,13 @@ async def process_notifications(ancs_client: AncsClient):
             notification.notification_uid, requested_attributes
         )
         max_attribute_name_width = max(
-            (len(attribute.attribute_id.name) for attribute in attributes)
+            len(attribute.attribute_id.name) for attribute in attributes
         )
         app_identifier = str(
             next(
-                (
-                    attribute.value
-                    for attribute in attributes
-                    if attribute.attribute_id == NotificationAttributeId.APP_IDENTIFIER
-                )
+                attribute.value
+                for attribute in attributes
+                if attribute.attribute_id == NotificationAttributeId.APP_IDENTIFIER
             )
         )
         if app_identifier not in _cached_app_names:
@@ -144,9 +143,9 @@ async def handle_command_client(
                 notification_uid = int(command_args)
                 await ancs_client.perform_negative_action(notification_uid)
             else:
-                writer.write(f"unknown command {command_name}".encode("utf-8"))
+                writer.write(f"unknown command {command_name}".encode())
         except Exception as error:
-            writer.write(f"ERROR: {error}\n".encode("utf-8"))
+            writer.write(f"ERROR: {error}\n".encode())
 
 
 # -----------------------------------------------------------------------------
@@ -192,9 +191,7 @@ async def main() -> None:
         ancs_client.on("notification", on_ancs_notification)
 
         # Process all notifications in a task.
-        notification_processing_task = asyncio.create_task(
-            process_notifications(ancs_client)
-        )
+        AsyncRunner.spawn(process_notifications(ancs_client))
 
         # Accept a TCP connection to handle commands.
         tcp_server = await asyncio.start_server(

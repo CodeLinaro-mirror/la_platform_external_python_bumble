@@ -21,7 +21,8 @@ from __future__ import annotations
 import dataclasses
 import logging
 import struct
-from typing import ClassVar, Optional, Sequence
+from collections.abc import Sequence
+from typing import ClassVar
 
 from bumble import core, device, gatt, gatt_adapters, gatt_client, hci, utils
 
@@ -337,7 +338,12 @@ class BroadcastAudioScanService(gatt.TemplateService):
             b"12",  # TEST
         )
 
-        super().__init__([self.battery_level_characteristic])
+        super().__init__(
+            [
+                self.broadcast_audio_scan_control_point_characteristic,
+                self.broadcast_receive_state_characteristic,
+            ]
+        )
 
     def on_broadcast_audio_scan_control_point_write(
         self, connection: device.Connection, value: bytes
@@ -351,7 +357,7 @@ class BroadcastAudioScanServiceProxy(gatt_client.ProfileServiceProxy):
 
     broadcast_audio_scan_control_point: gatt_client.CharacteristicProxy[bytes]
     broadcast_receive_states: list[
-        gatt_client.CharacteristicProxy[Optional[BroadcastReceiveState]]
+        gatt_client.CharacteristicProxy[BroadcastReceiveState | None]
     ]
 
     def __init__(self, service_proxy: gatt_client.ServiceProxy):

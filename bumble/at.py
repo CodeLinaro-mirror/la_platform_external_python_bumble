@@ -12,7 +12,6 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from typing import Union
 
 from bumble import core
 
@@ -36,7 +35,7 @@ def tokenize_parameters(buffer: bytes) -> list[bytes]:
 
         if in_quotes:
             token.extend(char)
-            if char == b'\"':
+            if char == b'"':
                 in_quotes = False
                 tokens.append(token[1:-1])
                 token = bytearray()
@@ -63,18 +62,18 @@ def tokenize_parameters(buffer: bytes) -> list[bytes]:
     return [bytes(token) for token in tokens if len(token) > 0]
 
 
-def parse_parameters(buffer: bytes) -> list[Union[bytes, list]]:
+def parse_parameters(buffer: bytes) -> list[bytes | list]:
     """Parse the parameters using the comma and parenthesis separators.
     Raises AtParsingError in case of invalid input string."""
 
     tokens = tokenize_parameters(buffer)
     accumulator: list[list] = [[]]
-    current: Union[bytes, list] = bytes()
+    current: bytes | list = b''
 
     for token in tokens:
         if token == b',':
             accumulator[-1].append(current)
-            current = bytes()
+            current = b''
         elif token == b'(':
             accumulator.append([])
         elif token == b')':

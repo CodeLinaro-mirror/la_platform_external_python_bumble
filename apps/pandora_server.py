@@ -19,7 +19,7 @@ ROOTCANAL_PORT_CUTTLEFISH = 7300
 @click.option(
     '--transport',
     help='HCI transport',
-    default=f'tcp-client:127.0.0.1:<rootcanal-port>',
+    default='tcp-client:127.0.0.1:<rootcanal-port>',
 )
 @click.option(
     '--config',
@@ -44,7 +44,7 @@ def retrieve_config(config: str) -> dict[str, Any]:
     if not config:
         return {}
 
-    with open(config, 'r') as f:
+    with open(config) as f:
         return json.load(f)
 
 

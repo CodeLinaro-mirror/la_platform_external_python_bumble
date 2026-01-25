@@ -22,9 +22,9 @@ import enum
 import logging
 import struct
 from collections.abc import AsyncGenerator, Awaitable, Callable
-from typing import Union
+from typing import ClassVar
 
-from typing_extensions import ClassVar, Self
+from typing_extensions import Self
 
 from bumble import utils
 from bumble.codecs import AacAudioRtpPacket
@@ -266,7 +266,7 @@ class MediaCodecInformation:
     @classmethod
     def create(
         cls, media_codec_type: int, data: bytes
-    ) -> Union[MediaCodecInformation, bytes]:
+    ) -> MediaCodecInformation | bytes:
         if media_codec_type == CodecType.SBC:
             return SbcMediaCodecInformation.from_bytes(data)
         elif media_codec_type == CodecType.MPEG_2_4_AAC:
@@ -490,7 +490,7 @@ class VendorSpecificMediaCodecInformation(MediaCodecInformation):
                 'VendorSpecificMediaCodecInformation(',
                 f'  vendor_id: {self.vendor_id:08X} ({name_or_number(COMPANY_IDENTIFIERS, self.vendor_id & 0xFFFF)})',
                 f'  codec_id:  {self.codec_id:04X}',
-                f'  value:     {self.value.hex()}' ')',
+                f'  value:     {self.value.hex()})',
             ]
         )
 
@@ -686,7 +686,7 @@ class SbcPacketSource:
                     # Prepare for next packets
                     sequence_number += 1
                     sequence_number &= 0xFFFF
-                    sample_count += sum((frame.sample_count for frame in frames))
+                    sample_count += sum(frame.sample_count for frame in frames)
                     frames = [frame]
                     frames_size = len(frame.payload)
                 else:
