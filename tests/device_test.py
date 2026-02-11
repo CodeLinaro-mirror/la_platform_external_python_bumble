@@ -42,7 +42,6 @@ from bumble.hci import (
     HCI_CREATE_CONNECTION_COMMAND,
     HCI_SUCCESS,
     Address,
-    HCI_Command_Complete_Event,
     HCI_Command_Status_Event,
     HCI_Connection_Complete_Event,
     HCI_Connection_Request_Event,
@@ -154,10 +153,10 @@ async def test_device_connect_parallel():
         assert packet.name == 'HCI_ACCEPT_CONNECTION_REQUEST_COMMAND'
 
         d1.host.on_hci_packet(
-            HCI_Command_Complete_Event(
+            HCI_Command_Status_Event(
+                status=HCI_COMMAND_STATUS_PENDING,
                 num_hci_command_packets=1,
                 command_opcode=HCI_ACCEPT_CONNECTION_REQUEST_COMMAND,
-                return_parameters=b"\x00",
             )
         )
 
@@ -188,10 +187,10 @@ async def test_device_connect_parallel():
         assert packet.name == 'HCI_ACCEPT_CONNECTION_REQUEST_COMMAND'
 
         d2.host.on_hci_packet(
-            HCI_Command_Complete_Event(
+            HCI_Command_Status_Event(
+                status=HCI_COMMAND_STATUS_PENDING,
                 num_hci_command_packets=1,
                 command_opcode=HCI_ACCEPT_CONNECTION_REQUEST_COMMAND,
-                return_parameters=b"\x00",
             )
         )
 
@@ -620,7 +619,9 @@ async def test_le_request_subrate():
     def on_le_subrate_change():
         q.put_nowait(lambda: None)
 
-    devices.connections[0].on(Connection.EVENT_LE_SUBRATE_CHANGE, on_le_subrate_change)
+    devices.connections[0].on(
+        Connection.EVENT_CONNECTION_PARAMETERS_UPDATE, on_le_subrate_change
+    )
 
     await devices[0].send_command(
         hci.HCI_LE_Subrate_Request_Command(

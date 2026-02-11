@@ -8,13 +8,13 @@ third_party {
   license_type: NOTICE
   last_upgrade_date {
     year: 2026
-    month: 1
-    day: 19
+    month: 2
+    day: 5
   }
   homepage: "https://google.github.io/bumble/"
   identifier {
     type: "Git"
     value: "https://github.com/google/bumble"
-    version: "c619f1f21b162cb756d11ee62c8f0d6805a8e104"
+    version: "256a1a7405232aaa777b48a55a664490ba5c79aa"
   }
 }
