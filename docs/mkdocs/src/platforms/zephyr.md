@@ -37,7 +37,7 @@ The vendor specific HCI commands to read and write TX power are defined in
 from bumble.vendor.zephyr.hci import HCI_Write_Tx_Power_Level_Command
 
 # set advertising power to -4 dB
-response = await host.send_command(
+response = await host.send_sync_command(
     HCI_Write_Tx_Power_Level_Command(
         handle_type=HCI_Write_Tx_Power_Level_Command.TX_POWER_HANDLE_TYPE_ADV,
         connection_handle=0,
@@ -45,7 +45,7 @@ response = await host.send_command(
     )
 )
 
-if response.return_parameters.status == HCI_SUCCESS:
-    print(f"TX power set to {response.return_parameters.selected_tx_power_level}")
+if response.status == HCI_SUCCESS:
+    print(f"TX power set to {response.selected_tx_power_level}")
 
 ```
