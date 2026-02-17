@@ -16,7 +16,7 @@
 # Imports
 # -----------------------------------------------------------------------------
 import asyncio
-from typing import Callable, Iterable, Optional
+from collections.abc import Callable, Iterable
 
 import click
 
@@ -174,7 +174,7 @@ async def show_vcs(vcs: VolumeControlServiceProxy) -> None:
 
 
 # -----------------------------------------------------------------------------
-async def show_device_info(peer, done: Optional[asyncio.Future]) -> None:
+async def show_device_info(peer, done: asyncio.Future | None) -> None:
     try:
         # Discover all services
         print(color('### Discovering Services and Characteristics', 'magenta'))
@@ -215,7 +215,6 @@ async def show_device_info(peer, done: Optional[asyncio.Future]) -> None:
 # -----------------------------------------------------------------------------
 async def async_main(device_config, encrypt, transport, address_or_name):
     async with await open_transport(transport) as (hci_source, hci_sink):
-
         # Create a device
         if device_config:
             device = Device.from_config_file_with_hci(

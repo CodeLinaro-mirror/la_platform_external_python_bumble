@@ -22,16 +22,12 @@ import collections
 import enum
 import functools
 import logging
-import sys
 import warnings
+from collections.abc import Awaitable, Callable
 from typing import (
     Any,
-    Awaitable,
-    Callable,
-    Optional,
     Protocol,
     TypeVar,
-    Union,
     overload,
 )
 
@@ -170,8 +166,8 @@ class EventWatcher:
     ) -> _Handler: ...
 
     def on(
-        self, emitter: pyee.EventEmitter, event: str, handler: Optional[_Handler] = None
-    ) -> Union[_Handler, Callable[[_Handler], _Handler]]:
+        self, emitter: pyee.EventEmitter, event: str, handler: _Handler | None = None
+    ) -> _Handler | Callable[[_Handler], _Handler]:
         '''Watch an event until the context is closed.
 
         Args:
@@ -199,8 +195,8 @@ class EventWatcher:
     ) -> _Handler: ...
 
     def once(
-        self, emitter: pyee.EventEmitter, event: str, handler: Optional[_Handler] = None
-    ) -> Union[_Handler, Callable[[_Handler], _Handler]]:
+        self, emitter: pyee.EventEmitter, event: str, handler: _Handler | None = None
+    ) -> _Handler | Callable[[_Handler], _Handler]:
         '''Watch an event for once.
 
         Args:
@@ -241,11 +237,7 @@ def cancel_on_event(
             return
         msg = f'abort: {event} event occurred.'
         if isinstance(future, asyncio.Task):
-            # python < 3.9 does not support passing a message on `Task.cancel`
-            if sys.version_info < (3, 9, 0):
-                future.cancel()
-            else:
-                future.cancel(msg)
+            future.cancel(msg)
         else:
             future.set_exception(asyncio.CancelledError(msg))
 
@@ -537,3 +529,20 @@ class IntConvertible(Protocol):
 
     def __init__(self, value: int) -> None: ...
     def __int__(self) -> int: ...
+
+
+# -----------------------------------------------------------------------------
+def crc_16(data: bytes) -> int:
+    """Calculate CRC-16-IBM of given data.
+
+    Polynomial = x^16 + x^15 + x^2 + 1 = 0x8005 or 0xA001(Reversed)
+    """
+    crc = 0x0000
+    for byte in data:
+        crc ^= byte
+        for _ in range(8):
+            if (crc & 0x0001) > 0:
+                crc = (crc >> 1) ^ 0xA001
+            else:
+                crc = crc >> 1
+    return crc

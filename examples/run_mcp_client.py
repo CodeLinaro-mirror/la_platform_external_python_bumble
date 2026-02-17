@@ -18,7 +18,6 @@
 import asyncio
 import json
 import sys
-from typing import Optional
 
 import websockets.asyncio.server
 
@@ -55,7 +54,7 @@ from bumble.transport import open_transport
 # -----------------------------------------------------------------------------
 async def main() -> None:
     if len(sys.argv) < 3:
-        print('Usage: run_mcp_client.py <config-file>' '<transport-spec-for-device>')
+        print('Usage: run_mcp_client.py <config-file><transport-spec-for-device>')
         return
 
     print('<<< connecting to HCI...')
@@ -101,8 +100,8 @@ async def main() -> None:
         )
         device.add_service(AudioStreamControlService(device, sink_ase_id=[1]))
 
-        ws: Optional[websockets.asyncio.server.ServerConnection] = None
-        mcp: Optional[MediaControlServiceProxy] = None
+        ws: websockets.asyncio.server.ServerConnection | None = None
+        mcp: MediaControlServiceProxy | None = None
 
         advertising_data = bytes(
             AdvertisingData(

@@ -19,14 +19,15 @@ from __future__ import annotations
 
 import abc
 import asyncio
+import concurrent.futures
 import dataclasses
 import enum
 import logging
 import pathlib
 import sys
 import wave
-from concurrent.futures import ThreadPoolExecutor
-from typing import TYPE_CHECKING, AsyncGenerator, BinaryIO
+from collections.abc import AsyncGenerator
+from typing import TYPE_CHECKING, BinaryIO
 
 from bumble.colors import color
 
@@ -176,7 +177,7 @@ class ThreadedAudioOutput(AudioOutput):
     """
 
     def __init__(self) -> None:
-        self._thread_pool = ThreadPoolExecutor(1)
+        self._thread_pool = concurrent.futures.ThreadPoolExecutor(1)
         self._pcm_samples: asyncio.Queue[bytes] = asyncio.Queue()
         self._write_task = asyncio.create_task(self._write_loop())
 
@@ -405,7 +406,7 @@ class ThreadedAudioInput(AudioInput):
     """Base class for AudioInput implementation where reading samples may block."""
 
     def __init__(self) -> None:
-        self._thread_pool = ThreadPoolExecutor(1)
+        self._thread_pool = concurrent.futures.ThreadPoolExecutor(1)
         self._pcm_samples: asyncio.Queue[bytes] = asyncio.Queue()
 
     @abc.abstractmethod
@@ -545,5 +546,6 @@ class SoundDeviceAudioInput(ThreadedAudioInput):
         return bytes(pcm_buffer)
 
     def _close(self):
-        self._stream.stop()
-        self._stream = None
+        if self._stream:
+            self._stream.stop()
+            self._stream = None
