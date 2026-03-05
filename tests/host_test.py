@@ -15,6 +15,7 @@
 # -----------------------------------------------------------------------------
 # Imports
 # -----------------------------------------------------------------------------
+import asyncio
 import logging
 import unittest
 import unittest.mock
@@ -22,9 +23,22 @@ import unittest.mock
 import pytest
 
 from bumble.controller import Controller
-from bumble.hci import HCI_AclDataPacket
+from bumble.hci import (
+    HCI_AclDataPacket,
+    HCI_Command_Complete_Event,
+    HCI_Command_Status_Event,
+    HCI_CommandStatus,
+    HCI_Disconnect_Command,
+    HCI_Error,
+    HCI_ErrorCode,
+    HCI_Event,
+    HCI_GenericReturnParameters,
+    HCI_LE_Terminate_BIG_Command,
+    HCI_Reset_Command,
+    HCI_StatusReturnParameters,
+)
 from bumble.host import DataPacketQueue, Host
-from bumble.transport.common import AsyncPipeSink
+from bumble.transport.common import AsyncPipeSink, TransportSink
 
 # -----------------------------------------------------------------------------
 # Logging
@@ -151,3 +165,114 @@ def test_data_packet_queue():
     assert drain_listener.on_flow.call_count == 1
     assert queue.queued == 15
     assert queue.completed == 15
+
+
+# -----------------------------------------------------------------------------
+class Source:
+    terminated: asyncio.Future[None]
+    sink: TransportSink
+
+    def set_packet_sink(self, sink: TransportSink) -> None:
+        self.sink = sink
+
+
+class Sink:
+    response: HCI_Event
+
+    def __init__(self, source: Source, response: HCI_Event) -> None:
+        self.source = source
+        self.response = response
+
+    def on_packet(self, packet: bytes) -> None:
+        self.source.sink.on_packet(bytes(self.response))
+
+
+@pytest.mark.asyncio
+async def test_send_sync_command() -> None:
+    source = Source()
+    sink = Sink(
+        source,
+        HCI_Command_Complete_Event(
+            1,
+            HCI_Reset_Command.op_code,
+            HCI_StatusReturnParameters(status=HCI_ErrorCode.SUCCESS),
+        ),
+    )
+
+    host = Host(source, sink)
+    host.ready = True
+
+    # Sync command with success
+    response1 = await host.send_sync_command(HCI_Reset_Command())
+    assert response1.status == HCI_ErrorCode.SUCCESS
+
+    # Sync command with error status should raise
+    error_response = HCI_Command_Complete_Event(
+        1,
+        HCI_Reset_Command.op_code,
+        HCI_StatusReturnParameters(status=HCI_ErrorCode.COMMAND_DISALLOWED_ERROR),
+    )
+    sink.response = error_response
+    with pytest.raises(HCI_Error) as excinfo:
+        await host.send_sync_command(HCI_Reset_Command())
+
+    assert excinfo.value.error_code == error_response.return_parameters.status
+
+    # Sync command with raw result
+    response2 = await host.send_sync_command_raw(HCI_Reset_Command())
+    assert response2.return_parameters.status == HCI_ErrorCode.COMMAND_DISALLOWED_ERROR
+
+    # Sync command with a command that's not an HCI_SyncCommand
+    # (here, for convenience, we use an HCI_AsyncCommand instance)
+    command = HCI_Disconnect_Command(connection_handle=0x1234, reason=0x13)
+    sink.response = HCI_Command_Complete_Event(
+        1,
+        command.op_code,
+        HCI_GenericReturnParameters(data=bytes.fromhex("00112233")),
+    )
+    response3 = await host.send_sync_command_raw(command)  # type: ignore
+    assert isinstance(response3.return_parameters, HCI_GenericReturnParameters)
+
+
+@pytest.mark.asyncio
+async def test_send_async_command() -> None:
+    source = Source()
+    sink = Sink(
+        source,
+        HCI_Command_Status_Event(
+            HCI_CommandStatus.PENDING,
+            1,
+            HCI_Reset_Command.op_code,
+        ),
+    )
+
+    host = Host(source, sink)
+    host.ready = True
+
+    # Normal pending status
+    response = await host.send_async_command(
+        HCI_LE_Terminate_BIG_Command(big_handle=0, reason=0)
+    )
+    assert response == HCI_CommandStatus.PENDING
+
+    # Unknown HCI command result returned as a Command Status
+    sink.response = HCI_Command_Status_Event(
+        HCI_ErrorCode.UNKNOWN_HCI_COMMAND_ERROR,
+        1,
+        HCI_LE_Terminate_BIG_Command.op_code,
+    )
+    response = await host.send_async_command(
+        HCI_LE_Terminate_BIG_Command(big_handle=0, reason=0), check_status=False
+    )
+    assert response == HCI_ErrorCode.UNKNOWN_HCI_COMMAND_ERROR
+
+    # Unknown HCI command result returned as a Command Complete
+    sink.response = HCI_Command_Complete_Event(
+        1,
+        HCI_LE_Terminate_BIG_Command.op_code,
+        HCI_StatusReturnParameters(HCI_ErrorCode.UNKNOWN_HCI_COMMAND_ERROR),
+    )
+    response = await host.send_async_command(
+        HCI_LE_Terminate_BIG_Command(big_handle=0, reason=0), check_status=False
+    )
+    assert response == HCI_ErrorCode.UNKNOWN_HCI_COMMAND_ERROR
