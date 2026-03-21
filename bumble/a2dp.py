@@ -88,24 +88,12 @@ SBC_DUAL_CHANNEL_MODE         = 0x01
 SBC_STEREO_CHANNEL_MODE       = 0x02
 SBC_JOINT_STEREO_CHANNEL_MODE = 0x03
 
-SBC_CHANNEL_MODE_NAMES = {
-    SBC_MONO_CHANNEL_MODE:         'SBC_MONO_CHANNEL_MODE',
-    SBC_DUAL_CHANNEL_MODE:         'SBC_DUAL_CHANNEL_MODE',
-    SBC_STEREO_CHANNEL_MODE:       'SBC_STEREO_CHANNEL_MODE',
-    SBC_JOINT_STEREO_CHANNEL_MODE: 'SBC_JOINT_STEREO_CHANNEL_MODE'
-}
-
 SBC_BLOCK_LENGTHS = [4, 8, 12, 16]
 
 SBC_SUBBANDS = [4, 8]
 
 SBC_SNR_ALLOCATION_METHOD      = 0x00
 SBC_LOUDNESS_ALLOCATION_METHOD = 0x01
-
-SBC_ALLOCATION_METHOD_NAMES = {
-    SBC_SNR_ALLOCATION_METHOD:      'SBC_SNR_ALLOCATION_METHOD',
-    SBC_LOUDNESS_ALLOCATION_METHOD: 'SBC_LOUDNESS_ALLOCATION_METHOD'
-}
 
 SBC_MAX_FRAMES_IN_RTP_PAYLOAD = 15
 
@@ -128,13 +116,6 @@ MPEG_2_AAC_LC_OBJECT_TYPE       = 0x00
 MPEG_4_AAC_LC_OBJECT_TYPE       = 0x01
 MPEG_4_AAC_LTP_OBJECT_TYPE      = 0x02
 MPEG_4_AAC_SCALABLE_OBJECT_TYPE = 0x03
-
-MPEG_2_4_OBJECT_TYPE_NAMES = {
-    MPEG_2_AAC_LC_OBJECT_TYPE:       'MPEG_2_AAC_LC_OBJECT_TYPE',
-    MPEG_4_AAC_LC_OBJECT_TYPE:       'MPEG_4_AAC_LC_OBJECT_TYPE',
-    MPEG_4_AAC_LTP_OBJECT_TYPE:      'MPEG_4_AAC_LTP_OBJECT_TYPE',
-    MPEG_4_AAC_SCALABLE_OBJECT_TYPE: 'MPEG_4_AAC_SCALABLE_OBJECT_TYPE'
-}
 
 
 OPUS_MAX_FRAMES_IN_RTP_PAYLOAD = 15
@@ -267,26 +248,27 @@ class MediaCodecInformation:
     def create(
         cls, media_codec_type: int, data: bytes
     ) -> MediaCodecInformation | bytes:
-        if media_codec_type == CodecType.SBC:
-            return SbcMediaCodecInformation.from_bytes(data)
-        elif media_codec_type == CodecType.MPEG_2_4_AAC:
-            return AacMediaCodecInformation.from_bytes(data)
-        elif media_codec_type == CodecType.NON_A2DP:
-            vendor_media_codec_information = (
-                VendorSpecificMediaCodecInformation.from_bytes(data)
-            )
-            if (
-                vendor_class_map := A2DP_VENDOR_MEDIA_CODEC_INFORMATION_CLASSES.get(
-                    vendor_media_codec_information.vendor_id
+        match media_codec_type:
+            case CodecType.SBC:
+                return SbcMediaCodecInformation.from_bytes(data)
+            case CodecType.MPEG_2_4_AAC:
+                return AacMediaCodecInformation.from_bytes(data)
+            case CodecType.NON_A2DP:
+                vendor_media_codec_information = (
+                    VendorSpecificMediaCodecInformation.from_bytes(data)
                 )
-            ) and (
-                media_codec_information_class := vendor_class_map.get(
-                    vendor_media_codec_information.codec_id
-                )
-            ):
-                return media_codec_information_class.from_bytes(
-                    vendor_media_codec_information.value
-                )
+                if (
+                    vendor_class_map := A2DP_VENDOR_MEDIA_CODEC_INFORMATION_CLASSES.get(
+                        vendor_media_codec_information.vendor_id
+                    )
+                ) and (
+                    media_codec_information_class := vendor_class_map.get(
+                        vendor_media_codec_information.codec_id
+                    )
+                ):
+                    return media_codec_information_class.from_bytes(
+                        vendor_media_codec_information.value
+                    )
         return vendor_media_codec_information
 
     @classmethod
