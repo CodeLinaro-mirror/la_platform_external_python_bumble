@@ -23,7 +23,7 @@ from unittest import mock
 
 import pytest
 
-from bumble import device
+from bumble import core, device
 from bumble.profiles import csip
 from bumble.testing.test_utils import TwoDevices
 
@@ -107,6 +107,96 @@ async def test_csis(sirk_type):
         'B', csip.MemberLock.UNLOCKED
     )
     assert await csis_client.set_member_rank.read_value() == struct.pack('B', 0)
+
+
+# -----------------------------------------------------------------------------
+@pytest.mark.asyncio
+async def test_coordinated_set_name():
+    SIRK = bytes.fromhex('2f62c8ae41867d1bb619e788a2605faa')
+    LTK = bytes.fromhex('2f62c8ae41867d1bb619e788a2605faa')
+    SET_NAME = 'My Earbuds'
+
+    devices = TwoDevices()
+    devices[0].add_service(
+        csip.CoordinatedSetIdentificationService(
+            set_identity_resolving_key=SIRK,
+            set_identity_resolving_key_type=csip.SirkType.PLAINTEXT,
+            coordinated_set_name=SET_NAME,
+        )
+    )
+
+    await devices.setup_connection()
+
+    # Mock encryption.
+    devices.connections[0].encryption = 1
+    devices.connections[1].encryption = 1
+    devices[0].get_long_term_key = mock.AsyncMock(return_value=LTK)
+    devices[1].get_long_term_key = mock.AsyncMock(return_value=LTK)
+
+    peer = device.Peer(devices.connections[1])
+    csis_client = await peer.discover_service_and_create_proxy(
+        csip.CoordinatedSetIdentificationProxy
+    )
+
+    # Verify the optional Coordinated Set Name characteristic is present and readable.
+    assert csis_client.coordinated_set_name is not None
+    name = await csis_client.coordinated_set_name.read_value()
+    assert name == SET_NAME
+
+
+# -----------------------------------------------------------------------------
+@pytest.mark.asyncio
+async def test_coordinated_set_name_optional():
+    '''Coordinated Set Name is optional: omitting it should leave the proxy attribute as None.'''
+    SIRK = bytes.fromhex('2f62c8ae41867d1bb619e788a2605faa')
+    LTK = bytes.fromhex('2f62c8ae41867d1bb619e788a2605faa')
+
+    devices = TwoDevices()
+    devices[0].add_service(
+        csip.CoordinatedSetIdentificationService(
+            set_identity_resolving_key=SIRK,
+            set_identity_resolving_key_type=csip.SirkType.PLAINTEXT,
+        )
+    )
+
+    await devices.setup_connection()
+
+    # Mock encryption.
+    devices.connections[0].encryption = 1
+    devices.connections[1].encryption = 1
+    devices[0].get_long_term_key = mock.AsyncMock(return_value=LTK)
+    devices[1].get_long_term_key = mock.AsyncMock(return_value=LTK)
+
+    peer = device.Peer(devices.connections[1])
+    csis_client = await peer.discover_service_and_create_proxy(
+        csip.CoordinatedSetIdentificationProxy
+    )
+
+    # Coordinated Set Name was not provided, so the proxy attribute should be None.
+    assert csis_client.coordinated_set_name is None
+
+
+# -----------------------------------------------------------------------------
+def test_coordinated_set_name_max_length():
+    '''Coordinated Set Name is limited to 128 octets as UTF-8.'''
+    SIRK = bytes.fromhex('2f62c8ae41867d1bb619e788a2605faa')
+
+    # A 128-character ASCII string encodes to exactly 128 octets (within limit).
+    valid_name = 'a' * 128
+    service = csip.CoordinatedSetIdentificationService(
+        set_identity_resolving_key=SIRK,
+        set_identity_resolving_key_type=csip.SirkType.PLAINTEXT,
+        coordinated_set_name=valid_name,
+    )
+    assert service.coordinated_set_name_characteristic is not None
+
+    # A 129-character ASCII string encodes to 129 octets (over the limit).
+    with pytest.raises(core.InvalidArgumentError):
+        csip.CoordinatedSetIdentificationService(
+            set_identity_resolving_key=SIRK,
+            set_identity_resolving_key_type=csip.SirkType.PLAINTEXT,
+            coordinated_set_name='a' * 129,
+        )
 
 
 # -----------------------------------------------------------------------------
